@@ -13,6 +13,7 @@ model = dict(
         norm_eval=True,
         style='pytorch',
         init_cfg=dict(type='Pretrained', checkpoint='torchvision://resnet50')),
+   neck=None,
     bbox_head=dict(
         type='DETRHead',
         num_classes=80,

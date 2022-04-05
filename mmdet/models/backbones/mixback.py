@@ -1,7 +1,16 @@
-from mmdet.models.builder import BACKBONES
 from mmcv.runner import BaseModule
+from mmcv.cnn import build_norm_layer, constant_init, trunc_normal_init
+from mmcv.cnn.utils.weight_init import trunc_normal_
+from mmcv.runner import BaseModule, ModuleList, _load_checkpoint
+from mmcv.utils import to_2tuple
+
+from mmdet.models.builder import BACKBONES
 from mmdet.models.backbones.swin import SwinBlockSequence
 from mmdet.models.backbones.pvt import PVTEncoderLayer
+from mmdet.utils import get_root_logger
+from mmdet.models.utils.ckpt_convert import swin_converter
+from mmdet.models.utils.transformer import PatchEmbed, PatchMerging
+
 import warnings
 from collections import OrderedDict
 from copy import deepcopy
@@ -9,16 +18,9 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as cp
-from mmcv.cnn import build_norm_layer, constant_init, trunc_normal_init
-from mmcv.cnn.bricks.transformer import FFN, build_dropout
-from mmcv.cnn.utils.weight_init import trunc_normal_
-from mmcv.runner import BaseModule, ModuleList, _load_checkpoint
-from mmcv.utils import to_2tuple
 
-from mmdet.utils import get_root_logger
-from mmdet.models.utils.ckpt_convert import swin_converter
-from mmdet.models.utils.transformer import PatchEmbed, PatchMerging
+
+
 
 class Mix_stage(BaseModule):
     """Implements one stage
@@ -117,7 +119,7 @@ class Mix_stage(BaseModule):
 
 
 @BACKBONES.register_module()
-class MixBack(BaseModule):
+class Mix_back(BaseModule):
 
     def __init__(self,
                  stages_inf,
