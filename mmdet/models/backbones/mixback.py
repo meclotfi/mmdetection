@@ -202,7 +202,7 @@ class Mix_back(BaseModule):
         in_channels = 3
         cr=0
         embed_dims_i=embed_dims
-        self.patch_embed=[]
+        self.patch_embed=ModuleList()
         for i in range(num_layers):
             print(in_channels)
             self.patch_embed.append(PatchEmbed(
