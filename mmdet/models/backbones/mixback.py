@@ -21,7 +21,6 @@ import torch.nn.functional as F
 
 
 
-
 class Mix_stage(BaseModule):
     """ Implements one stage
     Args:
@@ -204,7 +203,6 @@ class Mix_back(BaseModule):
         embed_dims_i=embed_dims
         self.patch_embed=ModuleList()
         for i in range(num_layers):
-            print(in_channels)
             self.patch_embed.append(PatchEmbed(
                 in_channels=in_channels,
                 embed_dims=embed_dims_i,
