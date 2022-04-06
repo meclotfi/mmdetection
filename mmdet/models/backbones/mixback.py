@@ -363,7 +363,6 @@ class Mix_back(BaseModule):
               x = self.drop_after_pos(x)
 
             x, hw_shape=patch_embed(x)
-            print(hw_shape)
             x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
             x = nlc_to_nchw(x, hw_shape)
             if i in self.out_indices:
