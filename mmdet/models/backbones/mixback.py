@@ -9,7 +9,7 @@ from mmdet.models.backbones.swin import SwinBlockSequence
 from mmdet.models.backbones.pvt import PVTEncoderLayer
 from mmdet.utils import get_root_logger
 from mmdet.models.utils.ckpt_convert import swin_converter
-from mmdet.models.utils.transformer import PatchEmbed, PatchMerging
+from mmdet.models.utils.transformer import PatchEmbed, PatchMerging,nlc_to_nchw
 
 import warnings
 from collections import OrderedDict
@@ -23,7 +23,7 @@ import torch.nn.functional as F
 
 
 class Mix_stage(BaseModule):
-    """Implements one stage
+    """ Implements one stage
     Args:
         embed_dims (int): The feature dimension.
         num_heads (int): Parallel attention heads.
@@ -123,12 +123,14 @@ class Mix_back(BaseModule):
 
     def __init__(self,
                  stages_inf,
+                 depth=None,
                  pretrain_img_size=224,
                  in_channels=3,
                  embed_dims=96,
-                 patch_size=4,
-                 strides=(4, 2, 2, 2),
-                 out_indices=(0, 1, 2, 31),
+                 patch_sizes=[8,4,4,4],
+                 strides=(8, 4, 4, 4),
+                 out_indices=(0, 1, 2, 3),
+                 paddings=[0,0,0,0],
                  patch_norm=True,
                  drop_rate=0.,
                  drop_path_rate=0.1,
@@ -169,8 +171,9 @@ class Mix_back(BaseModule):
         self.out_indices = out_indices
         self.use_abs_pos_embed = use_abs_pos_embed
 
-        assert strides[0] == patch_size, 'Use non-overlapping patch embed.'
+        #assert strides[0] == patch_sizes[0], 'Use non-overlapping patch embed.'
 
+        """
         self.patch_embed = PatchEmbed(
             in_channels=in_channels,
             embed_dims=embed_dims,
@@ -179,10 +182,10 @@ class Mix_back(BaseModule):
             stride=strides[0],
             norm_cfg=norm_cfg if patch_norm else None,
             init_cfg=None)
-
+        """
         if self.use_abs_pos_embed:
-            patch_row = pretrain_img_size[0] // patch_size
-            patch_col = pretrain_img_size[1] // patch_size
+            patch_row = pretrain_img_size[0] // patch_sizes[0]
+            patch_col = pretrain_img_size[1] // patch_sizes[0]
             num_patches = patch_row * patch_col
             self.absolute_pos_embed = nn.Parameter(
                 torch.zeros((1, num_patches, embed_dims)))
@@ -196,9 +199,24 @@ class Mix_back(BaseModule):
         ]
 
         self.stages = ModuleList()
-        in_channels = embed_dims
+        in_channels = 3
         cr=0
+        embed_dims_i=embed_dims
+        self.patch_embed=[]
         for i in range(num_layers):
+            print(in_channels)
+            self.patch_embed.append(PatchEmbed(
+                in_channels=in_channels,
+                embed_dims=embed_dims_i,
+                kernel_size=patch_sizes[i],
+                stride=strides[i],
+                padding="corner",
+                bias=True,
+                norm_cfg=norm_cfg))
+            in_channels=embed_dims_i
+            embed_dims_i = embed_dims_i * 2
+            
+            """          
             if i < num_layers - 1:
                 downsample = PatchMerging(
                     in_channels=in_channels,
@@ -208,20 +226,21 @@ class Mix_back(BaseModule):
                     init_cfg=None)
             else:
                 downsample = None
-
+            """
             stage =Mix_stage(
             drop_path_rate=dpr[sum(depths[:i]):sum(depths[:i + 1])],
-            downsample=downsample,
+            downsample=None,
             embed_dims=in_channels,
             cur=cr,
             dpr=dpr,
             **stages_inf[i]
             )
             self.stages.append(stage)
+            """
             if downsample:
                 in_channels = downsample.out_channels
             cr+=depths[i]
-
+            """
         self.num_features = [int(embed_dims * 2**i) for i in range(num_layers)]
         # Add a norm layer for each output
         for i in out_indices:
@@ -332,21 +351,28 @@ class Mix_back(BaseModule):
             self.load_state_dict(state_dict, False)
 
     def forward(self, x):
-        x, hw_shape = self.patch_embed(x)
-
-        if self.use_abs_pos_embed:
-            x = x + self.absolute_pos_embed
-        x = self.drop_after_pos(x)
+        
 
         outs = []
         for i, stage in enumerate(self.stages):
+            patch_embed=self.patch_embed[i]
+            
+            if (i==0):
+              if self.use_abs_pos_embed:
+                x = x + self.absolute_pos_embed
+              x = self.drop_after_pos(x)
+
+            x, hw_shape=patch_embed(x)
+            print(hw_shape)
             x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
+            x = nlc_to_nchw(x, hw_shape)
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 out = norm_layer(out)
                 out = out.view(-1, *out_hw_shape,
                                self.num_features[i]).permute(0, 3, 1,
                                                              2).contiguous()
-                outs.append(out)
+                outs.append(x)
+                
 
         return outs
