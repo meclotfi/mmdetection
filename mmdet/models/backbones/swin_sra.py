@@ -447,11 +447,12 @@ class SwinBlock(BaseModule):
         self.with_cp = with_cp
 
         self.norm1 = build_norm_layer(norm_cfg, embed_dims)[1]
-        self.attn = ShiftWindowMSA(
+        self.attn = W_SpatialReductionAttention(
             embed_dims=embed_dims,
             num_heads=num_heads,
             window_size=window_size,
             shift_size=window_size // 2 if shift else 0,
+            sr_ratio=4,
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
             attn_drop_rate=attn_drop_rate,
@@ -579,7 +580,7 @@ class SwinBlockSequence(BaseModule):
 
 
 @BACKBONES.register_module()
-class SwinTransformer(BaseModule):
+class SwinTransformer_SRA(BaseModule):
     """ Swin Transformer
     A PyTorch implement of : `Swin Transformer:
     Hierarchical Vision Transformer using Shifted Windows`  -

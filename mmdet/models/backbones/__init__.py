@@ -16,10 +16,11 @@ from .ssd_vgg import SSDVGG
 from .swin import SwinTransformer
 from .trident_resnet import TridentResNet
 from .mixback import Mix_back
+from .swin_sra import SwinTransformer_SRA
 
 __all__ = [
     'RegNet', 'ResNet', 'ResNetV1d', 'ResNeXt', 'SSDVGG', 'HRNet',
     'MobileNetV2', 'Res2Net', 'HourglassNet', 'DetectoRS_ResNet',
     'DetectoRS_ResNeXt', 'Darknet', 'ResNeSt', 'TridentResNet', 'CSPDarknet',
-    'SwinTransformer', 'PyramidVisionTransformer', 'PyramidVisionTransformerV2','Mix_back'
+    'SwinTransformer', 'PyramidVisionTransformer', 'PyramidVisionTransformerV2','Mix_back','SwinTransformer_SRA'
 ]
