@@ -684,7 +684,7 @@ class SwinTransformer_SRA(BaseModule):
         else:
             raise TypeError('pretrained must be a str or None')
 
-        super(SwinTransformer, self).__init__(init_cfg=init_cfg)
+        super(SwinTransformer_SRA, self).__init__(init_cfg=init_cfg)
 
         num_layers = len(depths)
         self.out_indices = out_indices
@@ -758,7 +758,7 @@ class SwinTransformer_SRA(BaseModule):
 
     def train(self, mode=True):
         """Convert the model into training mode while keep layers freezed."""
-        super(SwinTransformer, self).train(mode)
+        super(SwinTransformer_SRA, self).train(mode)
         self._freeze_stages()
 
     def _freeze_stages(self):
