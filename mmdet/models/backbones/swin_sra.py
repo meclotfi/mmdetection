@@ -326,7 +326,7 @@ class W_SpatialReductionAttention(BaseModule):
         super().__init__(init_cfg=init_cfg)
 
        
-
+        self.batch_first=batch_first
 
         self.wsa=ShiftWindowMSA(embed_dims=embed_dims,num_heads=num_heads,window_size=window_size,shift_size=shift_size,qkv_bias=qkv_bias,qk_scale=qk_scale,attn_drop_rate=attn_drop_rate,proj_drop_rate=proj_drop_rate)
         self.sr_ratio = sr_ratio
