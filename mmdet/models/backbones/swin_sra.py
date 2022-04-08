@@ -376,7 +376,7 @@ class W_SpatialReductionAttention(BaseModule):
         if self.batch_first:
             out = out.transpose(0, 1)
 
-        return out
+        return out,hw_shape
 
     def legacy_forward(self, x, hw_shape, identity=None):
         """multi head attention forward in mmcv version < 1.3.17."""
