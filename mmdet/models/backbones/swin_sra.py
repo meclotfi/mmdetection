@@ -468,7 +468,7 @@ class SwinBlock(BaseModule):
 
     def forward(self, x, hw_shape):
 
-        def _inner_forward(x):
+        def _inner_forward(x,hw_shape):
             identity = x
             x = self.norm1(x)
             x,hw_shape = self.attn(x, hw_shape)
@@ -477,12 +477,12 @@ class SwinBlock(BaseModule):
             x = self.norm2(x)
             x = self.ffn(x, identity=identity)
 
-            return x
+            return x,hw_shape
 
         if self.with_cp and x.requires_grad:
             x = cp.checkpoint(_inner_forward, x)
         else:
-            x = _inner_forward(x)
+            x , hw_shape = _inner_forward(x,hw_shape=hw_shape)
 
         return x,hw_shape
 
