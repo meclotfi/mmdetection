@@ -338,7 +338,7 @@ class W_SpatialReductionAttention(BaseModule):
        
 
 
-        self.wsa=ShiftWindowMSA(embed_dims=embed_dims,num_heads=num_heads,window_size=window_size,shift_size=shift_size,attn_drop_rate=attn_drop,qkv_bias=qkv_bias,qk_scale=qk_scale,attn_drop_rate=attn_drop_rate,proj_drop_rate=proj_drop_rate)
+        self.wsa=ShiftWindowMSA(embed_dims=embed_dims,num_heads=num_heads,window_size=window_size,shift_size=shift_size,qkv_bias=qkv_bias,qk_scale=qk_scale,attn_drop_rate=attn_drop_rate,proj_drop_rate=proj_drop_rate)
         self.sr_ratio = sr_ratio
         if sr_ratio > 1:
             self.sr = Conv2d(
