@@ -314,8 +314,6 @@ class W_SpatialReductionAttention(BaseModule):
                  num_heads,
                  window_size,
                  shift_size=0,
-                 attn_drop=0.,
-                 proj_drop=0.,
                  qk_scale=None,
                  dropout_layer=None,
                  batch_first=True,
@@ -325,15 +323,7 @@ class W_SpatialReductionAttention(BaseModule):
                  norm_cfg=dict(type='LN'),
                  sr_ratio=4,
                  init_cfg=None):
-        super().__init__(
-            embed_dims,
-            num_heads,
-            attn_drop,
-            proj_drop,
-            batch_first=batch_first,
-            dropout_layer=dropout_layer,
-            bias=qkv_bias,
-            init_cfg=init_cfg)
+        super().__init__(init_cfg=init_cfg)
 
        
 
