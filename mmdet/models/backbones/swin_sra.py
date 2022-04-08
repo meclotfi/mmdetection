@@ -46,6 +46,7 @@ class WindowMSA(BaseModule):
                  qk_scale=None,
                  attn_drop_rate=0.,
                  proj_drop_rate=0.,
+                 sr_ratio=2,
                  init_cfg=None):
 
         super().__init__()
@@ -75,10 +76,18 @@ class WindowMSA(BaseModule):
 
         self.softmax = nn.Softmax(dim=-1)
 
+        self.sr_ratio = sr_ratio
+        if sr_ratio > 1:
+            self.sr = Conv2d(
+                in_channels=embed_dims,
+                out_channels=embed_dims,
+                kernel_size=sr_ratio,
+                stride=sr_ratio)
+
     def init_weights(self):
         trunc_normal_(self.relative_position_bias_table, std=0.02)
 
-    def forward(self, x, mask=None):
+    def forward(self, x,hw_shape, mask=None):
         """
         Args:
 
@@ -90,7 +99,19 @@ class WindowMSA(BaseModule):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads,
                                   C // self.num_heads).permute(2, 0, 3, 1, 4)
         # make torchscript happy (cannot use tensor as tuple)
-        q, k, v = qkv[0], qkv[1], qkv[2]
+        q, kv = qkv[0], torch.tensor( qkv[1], qkv[2] )
+
+        kv.reshape(B,N,C*2)
+
+        # Reduce the size of q and k 
+        if self.sr_ratio > 1:
+            kv = nlc_to_nchw(kv, hw_shape)
+            k = self.sr(k)
+            kv = nchw_to_nlc(kv)
+            kv = self.norm(kv)
+        else:
+            kv=kv.reshape(2,B,-1,self.num_heads,C // self.num_heads)
+            k,v=kv[0],kv[1]
 
         q = q * self.scale
         attn = (q @ k.transpose(-2, -1))
@@ -153,6 +174,7 @@ class ShiftWindowMSA(BaseModule):
                  num_heads,
                  window_size,
                  shift_size=0,
+                 sr_ratio=4,
                  qkv_bias=True,
                  qk_scale=None,
                  attn_drop_rate=0,
@@ -169,6 +191,7 @@ class ShiftWindowMSA(BaseModule):
             embed_dims=embed_dims,
             num_heads=num_heads,
             window_size=to_2tuple(window_size),
+            sr_ratio=sr_ratio,
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
             attn_drop_rate=attn_drop_rate,
@@ -228,7 +251,7 @@ class ShiftWindowMSA(BaseModule):
         query_windows = query_windows.view(-1, self.window_size**2, C)
 
         # W-MSA/SW-MSA (nW*B, window_size*window_size, C)
-        attn_windows = self.w_msa(query_windows, mask=attn_mask)
+        attn_windows = self.w_msa(query_windows,hw_shape, mask=attn_mask)
 
         # merge windows
         attn_windows = attn_windows.view(-1, self.window_size,
@@ -284,117 +307,7 @@ class ShiftWindowMSA(BaseModule):
         windows = windows.view(-1, window_size, window_size, C)
         return windows
 
-class W_SpatialReductionAttention(BaseModule):
-    """An implementation of Spatial Reduction Attention of PVT.
-    This module is modified from MultiheadAttention which is a module from
-    mmcv.cnn.bricks.transformer.
-    Args:
-        embed_dims (int): The embedding dimension.
-        num_heads (int): Parallel attention heads.
-        attn_drop (float): A Dropout layer on attn_output_weights.
-            Default: 0.0.
-        proj_drop (float): A Dropout layer after `nn.MultiheadAttention`.
-            Default: 0.0.
-        dropout_layer (obj:`ConfigDict`): The dropout_layer used
-            when adding the shortcut. Default: None.
-        batch_first (bool): Key, Query and Value are shape of
-            (batch, n, embed_dim)
-            or (n, batch, embed_dim). Default: False.
-        qkv_bias (bool): enable bias for qkv if True. Default: True.
-        norm_cfg (dict): Config dict for normalization layer.
-            Default: dict(type='LN').
-        sr_ratio (int): The ratio of spatial reduction of Spatial Reduction
-            Attention of PVT. Default: 1.
-        init_cfg (obj:`mmcv.ConfigDict`): The Config for initialization.
-            Default: None.
-    """
 
-    def __init__(self,
-                 embed_dims,
-                 num_heads,
-                 window_size,
-                 shift_size=0,
-                 qk_scale=None,
-                 dropout_layer=None,
-                 batch_first=False,
-                 qkv_bias=True,
-                 attn_drop_rate=0,
-                 proj_drop_rate=0,
-                 norm_cfg=dict(type='LN'),
-                 sr_ratio=4,
-                 init_cfg=None):
-        super().__init__(init_cfg=init_cfg)
-
-       
-        self.batch_first=batch_first
-
-        self.wsa=ShiftWindowMSA(embed_dims=embed_dims,num_heads=num_heads,window_size=window_size,shift_size=shift_size,qkv_bias=qkv_bias,qk_scale=qk_scale,attn_drop_rate=attn_drop_rate,proj_drop_rate=proj_drop_rate)
-        self.sr_ratio = sr_ratio
-        if sr_ratio > 1:
-            self.sr = Conv2d(
-                in_channels=embed_dims,
-                out_channels=embed_dims,
-                kernel_size=sr_ratio,
-                stride=sr_ratio)
-            # The ret[0] of build_norm_layer is norm name.
-            self.norm = build_norm_layer(norm_cfg, embed_dims)[1]
-
-        # handle the BC-breaking from https://github.com/open-mmlab/mmcv/pull/1418 # noqa
-        from mmdet import digit_version, mmcv_version
-        if mmcv_version < digit_version('1.3.17'):
-            warnings.warn('The legacy version of forward function in'
-                          'SpatialReductionAttention is deprecated in'
-                          'mmcv>=1.3.17 and will no longer support in the'
-                          'future. Please upgrade your mmcv.')
-            self.forward = self.legacy_forward
-
-    def forward(self, x, hw_shape, identity=None):
-
-        if self.sr_ratio > 1:
-            x_q = nlc_to_nchw(x, hw_shape)
-            x_q = self.sr(x_q)
-            hw_shape=(x_q.shape[-2],x_q.shape[-1])
-            x_q = nchw_to_nlc(x_q)
-            x_q = self.norm(x_q)
-        else:
-            x_q = x
-
-        if identity is None:
-            identity = x_q
-
-        # Because the dataflow('key', 'query', 'value') of
-        # ``torch.nn.MultiheadAttention`` is (num_query, batch,
-        # embed_dims), We should adjust the shape of dataflow from
-        # batch_first (batch, num_query, embed_dims) to num_query_first
-        # (num_query ,batch, embed_dims), and recover ``attn_output``
-        # from num_query_first to batch_first.
-        if self.batch_first:
-            x_q = x_q.transpose(0, 1)
-
-        out = self.wsa(query=x_q,hw_shape = hw_shape)
-
-        if self.batch_first:
-            out = out.transpose(0, 1)
-
-        return out,hw_shape
-
-    def legacy_forward(self, x, hw_shape, identity=None):
-        """multi head attention forward in mmcv version < 1.3.17."""
-        if self.sr_ratio > 1:
-            x_q = nlc_to_nchw(x, hw_shape)
-            x_q = self.sr(x_q)
-            hw_shape=(x_q.shape[-2],x_q.shape[-1])
-            x_q = nchw_to_nlc(x_q)
-            x_q = self.norm(x_q)
-        else:
-            x_q = x
-
-        if identity is None:
-            identity = x_q
-
-        out = self.wsa(x_q,hw_shape)
-
-        return out,hw_shape
 class SwinBlock(BaseModule):
     """"
     Args:
@@ -442,7 +355,7 @@ class SwinBlock(BaseModule):
         self.with_cp = with_cp
 
         self.norm1 = build_norm_layer(norm_cfg, embed_dims)[1]
-        self.attn = W_SpatialReductionAttention(
+        self.attn = ShiftWindowMSA(
             embed_dims=embed_dims,
             num_heads=num_heads,
             window_size=window_size,
