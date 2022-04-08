@@ -320,7 +320,7 @@ class W_SpatialReductionAttention(BaseModule):
                  batch_first=True,
                  qkv_bias=True,
                  norm_cfg=dict(type='LN'),
-                 sr_ratio=1,
+                 sr_ratio=4,
                  init_cfg=None):
         super().__init__(
             embed_dims,
@@ -385,14 +385,14 @@ class W_SpatialReductionAttention(BaseModule):
 
     def legacy_forward(self, x, hw_shape, identity=None):
         """multi head attention forward in mmcv version < 1.3.17."""
-        x_q = x
         if self.sr_ratio > 1:
-            x_kv = nlc_to_nchw(x, hw_shape)
-            x_kv = self.sr(x_kv)
-            x_kv = nchw_to_nlc(x_kv)
-            x_kv = self.norm(x_kv)
+            x_q = nlc_to_nchw(x, hw_shape)
+            x_q = self.sr(x_q)
+            hw_shape=(x_q.shape[-2],x_q.shape[-1])
+            x_q = nchw_to_nlc(x_q)
+            x_q = self.norm(x_q)
         else:
-            x_kv = x
+            x_q = x
 
         if identity is None:
             identity = x_q
