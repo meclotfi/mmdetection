@@ -316,7 +316,7 @@ class W_SpatialReductionAttention(BaseModule):
                  shift_size=0,
                  qk_scale=None,
                  dropout_layer=None,
-                 batch_first=True,
+                 batch_first=False,
                  qkv_bias=True,
                  attn_drop_rate=0,
                  proj_drop_rate=0,
