@@ -394,7 +394,7 @@ class W_SpatialReductionAttention(BaseModule):
 
         out = self.wsa(x_q,hw_shape)
 
-        return out
+        return out,hw_shape
 class SwinBlock(BaseModule):
     """"
     Args:
@@ -471,7 +471,7 @@ class SwinBlock(BaseModule):
         def _inner_forward(x):
             identity = x
             x = self.norm1(x)
-            x = self.attn(x, hw_shape)
+            x,hw_shape = self.attn(x, hw_shape)
 
             identity = x
             x = self.norm2(x)
@@ -484,7 +484,7 @@ class SwinBlock(BaseModule):
         else:
             x = _inner_forward(x)
 
-        return x
+        return x,hw_shape
 
 
 class SwinBlockSequence(BaseModule):
@@ -563,7 +563,7 @@ class SwinBlockSequence(BaseModule):
 
     def forward(self, x, hw_shape):
         for block in self.blocks:
-            x = block(x, hw_shape)
+            x,hw_shape = block(x, hw_shape)
 
         if self.downsample:
             x_down, down_hw_shape = self.downsample(x, hw_shape)
