@@ -473,8 +473,6 @@ class SwinBlock(BaseModule):
             x = self.norm1(x)
             x = self.attn(x, hw_shape)
 
-            x = x + identity
-
             identity = x
             x = self.norm2(x)
             x = self.ffn(x, identity=identity)
