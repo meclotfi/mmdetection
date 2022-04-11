@@ -241,10 +241,10 @@ class Mix_back(BaseModule):
             """
         self.num_features = [int(embed_dims * 2**i) for i in range(num_layers)]
         # Add a norm layer for each output
+        self.norm_layers=ModuleList()
         for i in out_indices:
             layer = build_norm_layer(norm_cfg, self.num_features[i])[1]
-            layer_name = f'norm{i}'
-            self.add_module(layer_name, layer)
+            self.norm_layers.append(layer)
 
     def train(self, mode=True):
         """Convert the model into training mode while keep layers freezed."""
@@ -364,7 +364,7 @@ class Mix_back(BaseModule):
             x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
             x = nlc_to_nchw(x, hw_shape)
             if i in self.out_indices:
-                norm_layer = getattr(self, f'norm{i}')
+                norm_layer = self.norm_layers[i]
                 out = norm_layer(out)
                 out = out.view(-1, *out_hw_shape,
                                self.num_features[i]).permute(0, 3, 1,
