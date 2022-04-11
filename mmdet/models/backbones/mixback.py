@@ -369,7 +369,5 @@ class Mix_back(BaseModule):
                 out = out.view(-1, *out_hw_shape,
                                self.num_features[i]).permute(0, 3, 1,
                                                              2).contiguous()
-                outs.append(x)
-                
-
+                outs.append(out)
         return outs
