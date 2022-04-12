@@ -106,7 +106,8 @@ class TokenSelector(BaseModule):
             out=out.permute(0,3,1,2)
             #check dim order
             outs.append(out)
+        for o in outs:
+            print(o.shape)
         sorties=self.ch(outs)
-            
         return tuple(sorties)
         
