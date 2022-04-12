@@ -24,8 +24,7 @@ class SpatialAttention(nn.Module):
         self.sgap = nn.AvgPool2d(2)
 
     def forward(self, x):
-        B, H, W, C = x.shape
-        x = x.view(B, C, H, W)
+        x = x.permute(0, 3, 1, 2)
         
         mx = torch.max(x, 1)[0].unsqueeze(1)
         avg = torch.mean(x, 1).unsqueeze(1)
@@ -103,7 +102,7 @@ class TokenSelector(BaseModule):
         for i,x in enumerate(inputs):
             #check dim order
             x=x.permute(0,2,3,1)
-            out=self.Tfs[i](self.Tks[i](x))
+            out=self.Tfs[i](self.Tks[i](x),x)
             out=out.permute(0,3,1,2)
             #check dim order
             out=self.ch(out)
