@@ -362,7 +362,6 @@ class Mix_back(BaseModule):
 
             x, hw_shape=patch_embed(x)
             x, hw_shape, out, out_hw_shape = stage(x, hw_shape)
-            x = nlc_to_nchw(x, hw_shape)
             if i in self.out_indices:
                 norm_layer = getattr(self, f'norm{i}')
                 out = norm_layer(out)
