@@ -104,7 +104,8 @@ class TokenSelector(BaseModule):
             x=x.permute(0,2,3,1)
             out=self.Tks[i](x)
             B,S,C=out.shape
-            out=out.view(B,C,S//2,S//2)
+            out=out.permute(0,2,1)
+            out=out.reshape(B,C,S//2,S//2)
             #check dim order
             outs.append(out)
         for o in outs:
