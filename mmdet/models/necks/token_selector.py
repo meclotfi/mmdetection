@@ -100,7 +100,7 @@ class TokenSelector(BaseModule):
     def forward(self, inputs):
         """Forward function."""
         outs=[]
-        for i,x in inputs:
+        for i,x in enumerate(inputs):
             #check dim order
             x=x.permute(0,2,3,1)
             out=self.Tfs[i](self.Tks[i](x))
