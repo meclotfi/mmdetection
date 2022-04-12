@@ -102,8 +102,9 @@ class TokenSelector(BaseModule):
         for i,x in enumerate(inputs):
             #check dim order
             x=x.permute(0,2,3,1)
-            out=self.Tfs[i](self.Tks[i](x),x)
-            out=out.permute(0,3,1,2)
+            out=self.Tks[i](x)
+            B,S,C=out.shape
+            out=out.view(B,S//2,S//2,C)
             #check dim order
             outs.append(out)
         for o in outs:
