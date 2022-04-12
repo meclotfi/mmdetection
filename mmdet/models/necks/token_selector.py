@@ -81,7 +81,7 @@ class TokenSelector(BaseModule):
     def __init__(self,
                  in_channels,
                  out_channels=256,
-                 num_tokens=32,
+                 num_tokens=[32,16,8,4],
                  kernel_size=3,
                  conv_cfg=None,
                  norm_cfg=None,
