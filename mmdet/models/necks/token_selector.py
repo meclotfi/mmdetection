@@ -105,7 +105,8 @@ class TokenSelector(BaseModule):
             out=self.Tfs[i](self.Tks[i](x),x)
             out=out.permute(0,3,1,2)
             #check dim order
-            out=self.ch(out)
             outs.append(out)
-        return tuple(outs)
+        sorties=self.ch(outs)
+            
+        return tuple(sorties)
         
