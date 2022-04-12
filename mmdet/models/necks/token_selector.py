@@ -80,7 +80,7 @@ class TokenSelector(BaseModule):
     def __init__(self,
                  in_channels,
                  out_channels=256,
-                 num_tokens=[32,16,8,4],
+                 num_tokens=[64,49,36,16],
                  kernel_size=3,
                  conv_cfg=None,
                  norm_cfg=None,
@@ -105,7 +105,7 @@ class TokenSelector(BaseModule):
             out=self.Tks[i](x)
             B,S,C=out.shape
             out=out.permute(0,2,1)
-            out=out.reshape(B,C,S//2,S//2)
+            out=out.reshape(B,C,int(S**(0.5)),int(S**(0.5)))
             #check dim order
             outs.append(out)
         for o in outs:
