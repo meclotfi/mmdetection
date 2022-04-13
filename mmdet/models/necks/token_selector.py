@@ -12,7 +12,7 @@ from ..builder import NECKS
 
 
 
-class SpatialAttention(nn.Module):
+class SpatialAttention(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self.conv = ConvModule(2,1,kernel_size=(1,1), stride=1,norm_cfg=dict(type="BN2d"))
@@ -31,7 +31,7 @@ class SpatialAttention(nn.Module):
         
         return out, x * weight_map
 
-class TokenLearner(nn.Module):
+class TokenLearner(BaseModule):
     def __init__(self, S) -> None:
         super().__init__()
         self.S = S
@@ -45,7 +45,7 @@ class TokenLearner(nn.Module):
             Z[:, i, :] = Ai
         return Z
     
-class TokenFuser(nn.Module):
+class TokenFuser(BaseModule):
     def __init__(self, C, S) -> None:
         super().__init__()
         self.projection = nn.Linear(S, S, bias=False)
