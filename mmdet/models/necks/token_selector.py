@@ -36,7 +36,6 @@ class TokenLearner(BaseModule):
     def __init__(self, S,init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')) -> None:
         super(TokenLearner, self).__init__(init_cfg)
-        super().__init__()
         self.S = S
         self.tokenizers = [SpatialAttention() for _ in range(S)]
         
