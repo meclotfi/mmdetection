@@ -1,5 +1,6 @@
 # Copyright (c) OpenMMLab. All rights reserved.
 from mmdet.models.necks.channel_mapper import ChannelMapper
+from mmdet.models.necks.fpn import FPN
 import torch.nn as nn
 from mmcv.cnn import ConvModule
 from mmcv.runner import BaseModule,ModuleList
@@ -89,7 +90,7 @@ class TokenSelector(BaseModule):
                  init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')):
         super(TokenSelector, self).__init__(init_cfg)
-        #self.ch=ChannelMapper(in_channels,out_channels,kernel_size,conv_cfg,norm_cfg,act_cfg,num_outs=len(window_size)+1,init_cfg=init_cfg)
+        self.ch=FPN([in_channels for i in range(len(window_size)+1)],out_channels=out_channels,num_outs=len(window_size)+1)
         self.channels=in_channels
         self.window_size = window_size
         self.Tks=ModuleList()
@@ -124,7 +125,8 @@ class TokenSelector(BaseModule):
             outs.append(rev_x)
         for o in outs:
             print(o.shape)
-        return tuple(outs)
+        sorties=self.ch(outs)
+        return tuple(sorties)
     def window_reverse(self, windows, H, W,window_size):
         """
         Args:
