@@ -38,7 +38,9 @@ class TokenLearner(BaseModule):
                      type='Xavier', layer='Conv2d', distribution='uniform')) -> None:
         super(TokenLearner, self).__init__(init_cfg)
         self.S = S
-        self.tokenizers = [SpatialAttention() for _ in range(S)]
+        self.tokenizers = ModuleList()
+        for _ in range(S):
+          self.tokenizers.append(SpatialAttention())
         
     def forward(self, x):
         B, _, _, C = x.shape
@@ -46,7 +48,7 @@ class TokenLearner(BaseModule):
         for i in range(self.S):
             Ai, _ = self.tokenizers[i](x) # [B, C]
             Z.append(Ai)
-        res=torch.cat(tuple(Z),1)
+        res=torch.cat(tuple(Z),1).view(B,self.S,C)
         print("the res yaaay")
         print(res.shape)
         return res
