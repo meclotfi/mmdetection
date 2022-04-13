@@ -42,11 +42,14 @@ class TokenLearner(BaseModule):
         
     def forward(self, x):
         B, _, _, C = x.shape
-        Z = torch.Tensor(B, self.S, C)
+        Z = []
         for i in range(self.S):
             Ai, _ = self.tokenizers[i](x) # [B, C]
-            Z[:, i, :] = Ai
-        return Z
+            Z.append(Ai)
+        res=torch.cat(tuple(Z),1)
+        print("the res yaaay")
+        print(res.shape)
+        return res
     
 class TokenFuser(BaseModule):
     
@@ -94,7 +97,6 @@ class TokenSelector(BaseModule):
         self.channels=in_channels
         self.window_size = window_size
         self.Tks=ModuleList()
-        self.Tfs=ModuleList()
         for i,c in enumerate(window_size):
             self.Tks.append(TokenLearner(S=1))
 
