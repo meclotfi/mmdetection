@@ -95,7 +95,7 @@ class TokenSelector(BaseModule):
                  init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')):
         super(TokenSelector, self).__init__(init_cfg)
-        self.ch=FPN([in_channels for i in range(len(window_size)+1)],out_channels=out_channels,num_outs=len(window_size)+1)
+        self.ch=FPN(in_channels=[in_channels for i in range(len(window_size)+1)],out_channels=out_channels,num_outs=len(window_size)+1)
         self.channels=in_channels
         self.window_size = window_size
         self.Tks=ModuleList()
