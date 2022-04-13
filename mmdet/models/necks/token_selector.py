@@ -90,14 +90,16 @@ class TokenSelector(BaseModule):
                  kernel_size=3,
                  conv_cfg=None,
                  use_fpn=False,
+                 include_input=False,
                  act_cfg=dict(type='ReLU'),
                  num_outs=4,
                  init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')):
         super(TokenSelector, self).__init__(init_cfg)
         self.use_fpn=use_fpn
+        self.inc_input=include_input
         if use_fpn:
-            self.ch=FPN(in_channels=[in_channels for i in range(len(window_size)+1)],out_channels=out_channels,num_outs=len(window_size)+1)
+            self.ch=FPN(in_channels=[in_channels for i in range(len(window_size)+int(include_input))],out_channels=out_channels,num_outs=len(window_size)+1)
         self.channels=in_channels
         self.window_size = window_size
         self.Tks=ModuleList()
@@ -110,7 +112,8 @@ class TokenSelector(BaseModule):
         """inputs list of form B,C,H,W"""
         outs=[]
         x=input[0]
-        outs.append(x)
+        if self.inc_input: 
+            outs.append(x)
         x=x.permute(0,2,3,1) #B,H,W,C
         B,H,W,C=x.shape
         for i,WS in enumerate(self.window_size):
