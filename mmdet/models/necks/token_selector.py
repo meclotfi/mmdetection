@@ -6,7 +6,7 @@ from mmcv.runner import BaseModule,ModuleList
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mmdet.models.builder import NECKS
+from ..builder import NECKS
 
 
 
