@@ -13,8 +13,9 @@ from ..builder import NECKS
 
 
 class SpatialAttention(BaseModule):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self,init_cfg=dict(
+                     type='Xavier', layer='Conv2d', distribution='uniform')) -> None:
+        super(SpatialAttention, self).__init__(init_cfg)
         self.conv = ConvModule(2,1,kernel_size=(1,1), stride=1,norm_cfg=dict(type="BN2d"))
         
         self.sgap = nn.AvgPool2d(2)
@@ -32,7 +33,9 @@ class SpatialAttention(BaseModule):
         return out, x * weight_map
 
 class TokenLearner(BaseModule):
-    def __init__(self, S) -> None:
+    def __init__(self, S,init_cfg=dict(
+                     type='Xavier', layer='Conv2d', distribution='uniform')) -> None:
+        super(TokenLearner, self).__init__(init_cfg)
         super().__init__()
         self.S = S
         self.tokenizers = [SpatialAttention() for _ in range(S)]
@@ -46,8 +49,10 @@ class TokenLearner(BaseModule):
         return Z
     
 class TokenFuser(BaseModule):
-    def __init__(self, C, S) -> None:
-        super().__init__()
+    
+    def __init__(self, C, S,init_cfg=dict(
+                     type='Xavier', layer='Conv2d', distribution='uniform')) -> None:
+        super(TokenFuser, self).__init__(init_cfg)
         self.projection = nn.Linear(S, S, bias=False)
         self.Bi = nn.Linear(C, S)
         self.spatial_attn = SpatialAttention()
