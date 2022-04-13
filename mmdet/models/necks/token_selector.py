@@ -15,7 +15,7 @@ from ..builder import NECKS
 class SpatialAttention(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.conv = ConvModule(2,1,kernel_size=(1,1), stride=1,norm_cfg=dict(type="BN2d",num_features=1))
+        self.conv = ConvModule(2,1,kernel_size=(1,1), stride=1,norm_cfg=dict(_delete_=True,type="BN2d",num_features=1))
         
         self.sgap = nn.AvgPool2d(2)
 
