@@ -6,7 +6,7 @@ from mmcv.runner import BaseModule,ModuleList
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..builder import NECKS
+from mmdet.models.builder import NECKS
 
 
 
@@ -34,7 +34,7 @@ class SpatialAttention(nn.Module):
         out = (x * weight_map).mean(dim=(-2, -1))
         
         return out, x * weight_map
-@NECKS.register_module()
+
 class TokenLearner(nn.Module):
     def __init__(self, S) -> None:
         super().__init__()
@@ -78,38 +78,79 @@ class TokenSelector(BaseModule):
     """
 
     def __init__(self,
-                 in_channels,
-                 out_channels=256,
-                 num_tokens=[64,49,36,16],
+                 in_channels=96,
+                 out_channels=64,
+                 window_size=[4,8,16],
                  kernel_size=3,
                  conv_cfg=None,
                  norm_cfg=None,
                  act_cfg=dict(type='ReLU'),
-                 num_outs=None,
+                 num_outs=4,
                  init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')):
         super(TokenSelector, self).__init__(init_cfg)
-        self.ch=ChannelMapper(in_channels,out_channels,kernel_size,conv_cfg,norm_cfg,act_cfg,num_outs,init_cfg)
+        #self.ch=ChannelMapper(in_channels,out_channels,kernel_size,conv_cfg,norm_cfg,act_cfg,num_outs=len(window_size)+1,init_cfg=init_cfg)
         self.channels=in_channels
+        self.window_size = window_size
         self.Tks=ModuleList()
         self.Tfs=ModuleList()
-        for i,c in enumerate(in_channels):
-            self.Tks.append(TokenLearner(S=num_tokens[i]))
-            self.Tfs.append(TokenFuser(c,S=num_tokens[i]))
-    def forward(self, inputs):
-        """Forward function."""
+        for i,c in enumerate(window_size):
+            self.Tks.append(TokenLearner(S=1))
+
+
+
+    def forward(self, input):
+        """inputs list of form B,C,H,W"""
         outs=[]
-        for i,x in enumerate(inputs):
-            #check dim order
-            x=x.permute(0,2,3,1)
-            out=self.Tks[i](x)
-            B,S,C=out.shape
-            out=out.permute(0,2,1)
-            out=out.reshape(B,C,int(S**(0.5)),int(S**(0.5)))
-            #check dim order
-            outs.append(out)
+        x=input
+        outs.append(x)
+        x=x.permute(0,2,3,1) #B,H,W,C
+        B,H,W,C=x.shape
+        for i,WS in enumerate(self.window_size):
+            
+            # Pad to a multiple of window size
+            pad_r = (WS - W % WS) % WS
+            pad_b = (WS - H % WS) % WS
+            x_pad = F.pad(x, (0, 0, 0, pad_r, 0, pad_b))
+            H_pad, W_pad = x_pad.shape[1], x_pad.shape[2]
+            # nW*B, window_size, window_size, C
+            x_windows = self.window_partition(x_pad,WS)
+            # nW*B, window_size*window_size, C
+            x_windows = x_windows.view(-1,WS,WS, C)
+            
+            out_win=self.Tks[i](x_windows)
+            rev_x = self.window_reverse(out_win, H_pad, W_pad,WS)
+            rev_x=rev_x.permute(0,3,1,2)
+            outs.append(rev_x)
         for o in outs:
             print(o.shape)
-        sorties=self.ch(outs)
-        return tuple(sorties)
+        return tuple(outs)
+    def window_reverse(self, windows, H, W,window_size):
+        """
+        Args:
+            windows: (num_windows*B, window_size, window_size, C)
+            H (int): Height of image
+            W (int): Width of image
+        Returns:
+            x: (B, H, W, C)
+        """
+        window_size = window_size
+        B = int(windows.shape[0] / (H * W / window_size / window_size))
+        x = windows.view(B, H // window_size, W // window_size,-1)
+        return x
+
+    def window_partition(self, x,window_size):
+        """
+        Args:
+            x: (B, H, W, C)
+        Returns:
+            windows: (num_windows*B, window_size, window_size, C)
+        """
+        B, H, W, C = x.shape
+        print(x.shape)
+        x = x.view(B, H // window_size, window_size, W // window_size,
+                   window_size, C)
+        windows = x.permute(0, 1, 3, 2, 4, 5).contiguous()
+        windows = windows.view(-1, window_size, window_size, C)
+        return windows
         
