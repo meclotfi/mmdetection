@@ -89,13 +89,15 @@ class TokenSelector(BaseModule):
                  window_size=[4,8,16,24],
                  kernel_size=3,
                  conv_cfg=None,
-                 norm_cfg=None,
+                 use_fpn=False,
                  act_cfg=dict(type='ReLU'),
                  num_outs=4,
                  init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')):
         super(TokenSelector, self).__init__(init_cfg)
-        self.ch=FPN(in_channels=[in_channels for i in range(len(window_size)+1)],out_channels=out_channels,num_outs=len(window_size)+1)
+        self.use_fpn=use_fpn
+        if use_fpn:
+            self.ch=FPN(in_channels=[in_channels for i in range(len(window_size)+1)],out_channels=out_channels,num_outs=len(window_size)+1)
         self.channels=in_channels
         self.window_size = window_size
         self.Tks=ModuleList()
@@ -129,8 +131,9 @@ class TokenSelector(BaseModule):
             outs.append(rev_x)
         for o in outs:
             print(o.shape)
-        sorties=self.ch(outs)
-        return tuple(sorties)
+        if self.use_fpn:
+            outs=self.ch(outs)
+        return tuple(outs)
     def window_reverse(self, windows, H, W,window_size):
         """
         Args:
