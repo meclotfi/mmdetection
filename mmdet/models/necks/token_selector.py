@@ -11,8 +11,6 @@ from ..builder import NECKS
 
 
 
-
-
 class SpatialAttention(BaseModule):
     def __init__(self,init_cfg=dict(
                      type='Xavier', layer='Conv2d', distribution='uniform')) -> None:
@@ -49,8 +47,6 @@ class TokenLearner(BaseModule):
             Ai, _ = self.tokenizers[i](x) # [B, C]
             Z.append(Ai)
         res=torch.cat(tuple(Z),1).view(B,self.S,C)
-        print("the res yaaay")
-        print(res.shape)
         return res
     
 class TokenFuser(BaseModule):
@@ -132,8 +128,6 @@ class TokenSelector(BaseModule):
             rev_x = self.window_reverse(out_win, H_pad, W_pad,WS)
             rev_x=rev_x.permute(0,3,1,2)
             outs.append(rev_x)
-        for o in outs:
-            print(o.shape)
         if self.use_fpn:
             outs=self.ch(outs)
         return tuple(outs)
@@ -159,7 +153,6 @@ class TokenSelector(BaseModule):
             windows: (num_windows*B, window_size, window_size, C)
         """
         B, H, W, C = x.shape
-        print(x.shape)
         x = x.view(B, H // window_size, window_size, W // window_size,
                    window_size, C)
         windows = x.permute(0, 1, 3, 2, 4, 5).contiguous()
