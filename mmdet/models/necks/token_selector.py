@@ -102,7 +102,7 @@ class TokenSelector(BaseModule):
     def forward(self, input):
         """inputs list of form B,C,H,W"""
         outs=[]
-        x=input
+        x=input[0]
         outs.append(x)
         x=x.permute(0,2,3,1) #B,H,W,C
         B,H,W,C=x.shape
