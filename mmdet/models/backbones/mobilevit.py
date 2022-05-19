@@ -404,30 +404,30 @@ class MobileViT(BaseModule):
     def extract_end_points_l4(self, x: Tensor) -> Dict:
         return self.extract_end_points_all(x, use_l5=False)
 
-    def extract_features(self, x: Tensor) -> Tensor:
+    def extract_features(self, x: Tensor):
+        outs=[]
         x = self.conv_1(x)
+        if 0 in self.out_indices:
+            outs.append(x)
         x = self.layer_1(x)
-        if 1 in self.out_
+        if 1 in self.out_indices:
+            outs.append(x)
         x = self.layer_2(x)
+        if 2 in self.out_indices:
+            outs.append(x)
         x = self.layer_3(x)
-
+        if 3 in self.out_indices:
+            outs.append(x)
         x = self.layer_4(x)
+        if 4 in self.out_indices:
+            outs.append(x)
         x = self.layer_5(x)
-        x = self.conv_1x1_exp(x)
-        return x
+        if 5 in self.out_indices:
+            outs.append(x)
+        return outs
 
-    def forward(self, x: Tensor) -> Tensor:
-        x = self.conv_1(x)
-        x = self.layer_1(x)
-        x = self.layer_2(x)
-        x = self.layer_3(x)
-
-        x = self.layer_4(x)
-        x = self.layer_5(x)
-        x = self.conv_1x1_exp(x)
-        x = self.extract_features(x)
-        x = self.classifier(x)
-        return x
+    def forward(self, x: Tensor):
+        return self.extract_features(x)
 
     def freeze_norm_layers(self):
         for m in self.modules():
