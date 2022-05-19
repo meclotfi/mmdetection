@@ -22,7 +22,7 @@ from mobilenet.layers import ConvLayer, LinearLayer, GlobalPool, Dropout, Separa
 from mobilenet.modules import InvertedResidual, MobileViTBlock
 
 
-@PLUGIN_LAYERS.register_module("swish")
+@PLUGIN_LAYERS.register_module("Swish")
 class Swish(nn.SiLU):
     def __init__(self, inplace: bool = False):
         super(Swish, self).__init__(inplace=inplace)
@@ -160,7 +160,7 @@ class MobileViT(BaseModule):
         out_indices=(1, 2, 3, 4),
         opts=d_opts,
         mobilevit_config=config,
-        act_cfg=dict(type="swish"),
+        act_cfg=dict(type="Swish"),
         norm_cfg=dict(type='LN'),
         pretrained="https://docs-assets.developer.apple.com/ml-research/models/cvnets/classification/mobilevit_s.pth",
         *args, **kwargs) -> None:
