@@ -528,11 +528,12 @@ class MobileViT(BaseModule):
         output_channels = cfg.get("out_channels")
         num_blocks = cfg.pop("num_blocks",1)
         stride=cfg.pop("stride",1)
+        expand_ratio=cfg.pop("expand_ratio",2)
         block = []
 
         for i in range(num_blocks):
             stride=stride if i==0 else 1
-            layer = InvertedResidual(in_channels=input_channel,stride=stride,**cfg)
+            layer = InvertedResidual(in_channels=input_channel,stride=stride,mid_channels=int(round(input_channel * expand_ratio)),**cfg)
             block.append(layer)
             input_channel = output_channels
         return nn.Sequential(*block), input_channel
@@ -551,7 +552,7 @@ class MobileViT(BaseModule):
                 in_channels=input_channel,
                 out_channels=cfg.get("out_channels"),
                 stride=stride,
-                expand_ratio=cfg.get("mv_expand_ratio", 4)
+                mid_channels=int(round(input_channel * cfg.get("mv_expand_ratio", 2)))
             )
 
             block.append(layer)
