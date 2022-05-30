@@ -541,7 +541,7 @@ class MobileViT(BaseModule):
                          dict(type='TruncNormal',layer=['Linear'])],
                   *args, **kwargs) -> None:
      
-        super(MobileViT, self).__init__(init_cfg)
+        super(MobileViT, self).__init__(init_cfg=init_cfg)
         image_channels = 3
         out_channels = 16
         self.act_cfg=act_cfg
@@ -558,8 +558,6 @@ class MobileViT(BaseModule):
             dilate_l5 = True
         elif output_stride == 16:
             dilate_l5 = True
-
-        super(MobileViT, self).__init__()
         self.dilation = 1
 
         # store model configuration in a dictionary
@@ -589,6 +587,7 @@ class MobileViT(BaseModule):
 
         # weight initialization
         #self.reset_parameters(opts=opts)
+
 
     def _make_layer(self, input_channel, cfg: Dict,dropout,attn_dropout,ffn_dropout, dilate: Optional[bool] = False) -> Tuple[nn.Sequential, int]:
         copied_cfg = cfg.copy()
