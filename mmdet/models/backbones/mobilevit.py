@@ -15,6 +15,7 @@ from mmcv.utils import to_2tuple
 from mmcv.runner import BaseModule
 from ..builder import BACKBONES
 import einops
+from torch.nn.modules.batchnorm import _BatchNorm
 try:
     from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttention
 
@@ -589,6 +590,27 @@ class MobileViT(BaseModule):
         #self.reset_parameters(opts=opts)
 
 
+    def _freeze_stages(self):
+        for param in self.conv_1x1_exp.parameters():
+                param.requires_grad = False
+        if self.frozen_stages >= 0:
+            for param in self.conv1.parameters():
+                param.requires_grad = False
+        for i in range(1, self.frozen_stages + 1):
+            layer = getattr(self, f'layer{i}')
+            layer.eval()
+            for param in layer.parameters():
+                param.requires_grad = False
+    def train(self, mode=True):
+        """Convert the model into training mode while keep normalization layer
+        frozen."""
+        super(MobileViT, self).train(mode)
+        self._freeze_stages()
+        if mode and self.norm_eval:
+            for m in self.modules():
+                # trick: eval have effect on BatchNorm only
+                if isinstance(m, _BatchNorm):
+                    m.eval()
     def _make_layer(self, input_channel, cfg: Dict,dropout,attn_dropout,ffn_dropout, dilate: Optional[bool] = False) -> Tuple[nn.Sequential, int]:
         copied_cfg = cfg.copy()
         block_type = copied_cfg.pop("type","mobilenet")
