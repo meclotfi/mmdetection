@@ -16,6 +16,7 @@ from mmcv.runner import BaseModule
 from ..builder import BACKBONES
 import einops
 from torch.nn.modules.batchnorm import _BatchNorm
+import copy
 try:
     from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttention
 
@@ -550,6 +551,7 @@ class MobileViT(BaseModule):
         self.init_cfg=init_cfg
         self.frozen_stages=frozen_stages
         self.norm_eval=norm_eval
+        self.pretrained=pretrained
 
 
         # Segmentation architectures like Deeplab and PSPNet modifies the strides of the classification backbones
@@ -690,3 +692,16 @@ class MobileViT(BaseModule):
         
         #out=self.conv_1x1_exp(x)
         return outs
+    def init_weights(self):
+        super().init_weights()
+        if not(self.pretrained is None):
+            exp=torch.load(self.pretrained)
+            st_dict=exp['state_dict']
+            old_keys=copy.deepcopy(list(st_dict.keys()))
+            for k in old_keys:
+                if k.startswith("backbone."):
+                    st_dict[k[9:]] = st_dict.pop(k)
+                else:
+                    st_dict.pop(k)
+            self.load_state_dict(st_dict)
+
