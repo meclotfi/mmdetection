@@ -7,6 +7,7 @@ import os.path as osp
 import tempfile
 import warnings
 from collections import OrderedDict
+from .pipelines import Compose
 
 import mmcv
 import numpy as np
@@ -22,20 +23,7 @@ from .custom import CustomDataset
 @DATASETS.register_module()
 class CocoDataset(CustomDataset):
 
-    CLASSES = ('person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
-               'train', 'truck', 'boat', 'traffic light', 'fire hydrant',
-               'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog',
-               'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra', 'giraffe',
-               'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-               'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat',
-               'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-               'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
-               'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot',
-               'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-               'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop',
-               'mouse', 'remote', 'keyboard', 'cell phone', 'microwave',
-               'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock',
-               'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush')
+    CLASSES = ('person')
 
     PALETTE = [(220, 20, 60), (119, 11, 32), (0, 0, 142), (0, 0, 230),
                (106, 0, 228), (0, 60, 100), (0, 80, 100), (0, 0, 70),
@@ -58,8 +46,82 @@ class CocoDataset(CustomDataset):
                (127, 167, 115), (59, 105, 106), (142, 108, 45), (196, 172, 0),
                (95, 54, 80), (128, 76, 255), (201, 57, 1), (246, 0, 122),
                (191, 162, 208)]
+    def __init__(self,
+                 ann_file,
+                 img_person_ids,
+                 pipeline,
+                 classes=None,
+                 data_root=None,
+                 img_prefix='',
+                 seg_prefix=None,
+                 proposal_file=None,
+                 test_mode=False,
+                 filter_empty_gt=True,
+                 file_client_args=dict(backend='disk')):
+        self.ann_file = ann_file
+        self.data_root = data_root
+        self.img_prefix = img_prefix
+        self.seg_prefix = seg_prefix
+        self.proposal_file = proposal_file
+        self.test_mode = test_mode
+        self.filter_empty_gt = filter_empty_gt
+        self.CLASSES = self.get_classes(classes)
+        self.file_client = mmcv.FileClient(**file_client_args)
 
-    def load_annotations(self, ann_file):
+        # join paths if data_root is specified
+        if self.data_root is not None:
+            if not osp.isabs(self.ann_file):
+                self.ann_file = osp.join(self.data_root, self.ann_file)
+            if not (self.img_prefix is None or osp.isabs(self.img_prefix)):
+                self.img_prefix = osp.join(self.data_root, self.img_prefix)
+            if not (self.seg_prefix is None or osp.isabs(self.seg_prefix)):
+                self.seg_prefix = osp.join(self.data_root, self.seg_prefix)
+            if not (self.proposal_file is None
+                    or osp.isabs(self.proposal_file)):
+                self.proposal_file = osp.join(self.data_root,
+                                              self.proposal_file)
+        a=np.load(img_person_ids)
+        # load annotations (and proposals)
+        if hasattr(self.file_client, 'get_local_path'):
+            with self.file_client.get_local_path(self.ann_file) as local_path:
+                self.data_infos = self.load_annotations(local_path,a)
+        else:
+            warnings.warn(
+                'The used MMCV version does not have get_local_path. '
+                f'We treat the {self.ann_file} as local paths and it '
+                'might cause errors if the path is not a local path. '
+                'Please use MMCV>= 1.3.16 if you meet errors.')
+            self.data_infos = self.load_annotations(self.ann_file)
+
+        if self.proposal_file is not None:
+            if hasattr(self.file_client, 'get_local_path'):
+                with self.file_client.get_local_path(
+                        self.proposal_file) as local_path:
+                    self.proposals = self.load_proposals(local_path)
+            else:
+                warnings.warn(
+                    'The used MMCV version does not have get_local_path. '
+                    f'We treat the {self.ann_file} as local paths and it '
+                    'might cause errors if the path is not a local path. '
+                    'Please use MMCV>= 1.3.16 if you meet errors.')
+                self.proposals = self.load_proposals(self.proposal_file)
+        else:
+            self.proposals = None
+
+        # filter images too small and containing no annotations
+        if not test_mode:
+            valid_inds = self._filter_imgs()
+            self.data_infos = [self.data_infos[i] for i in valid_inds]
+            if self.proposals is not None:
+                self.proposals = [self.proposals[i] for i in valid_inds]
+            # set group flag for the sampler
+            self._set_group_flag()
+
+        # processing pipeline
+        self.pipeline = Compose(pipeline)
+
+
+    def load_annotations(self, ann_file,img_ids):
         """Load annotation from COCO style annotation file.
 
         Args:
@@ -75,19 +137,31 @@ class CocoDataset(CustomDataset):
         self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
 
         self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
-        self.img_ids = self.coco.get_img_ids()
+        self.img_ids = img_ids
         data_infos = []
         total_ann_ids = []
+        to_del=[]
         for i in self.img_ids:
             info = self.coco.load_imgs([i])[0]
             info['filename'] = info['file_name']
-            data_infos.append(info)
             ann_ids = self.coco.get_ann_ids(img_ids=[i])
+            ann_info=self.coco.load_anns(ann_ids)
+            for ann in ann_info:
+                if ann['category_id']!=1:
+                    ann_ids.remove(ann['id'])
+            if ann_ids:
+                data_infos.append(info)
+            else: 
+                to_del.append(i)
             total_ann_ids.extend(ann_ids)
+        #self.img_ids = [x for x in self.img_ids if x not in to_del]
         assert len(set(total_ann_ids)) == len(
             total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
         return data_infos
 
+    def del_at_index(l,index_list):
+        for ind in index_list:
+            l.pop()
     def get_ann_info(self, idx):
         """Get COCO annotation by index.
 
