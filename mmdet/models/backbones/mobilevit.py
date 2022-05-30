@@ -11,10 +11,10 @@ from mmcv.cnn import ConvModule,build_norm_layer
 from torch import nn, Tensor
 from mmcv.cnn.bricks.registry import ACTIVATION_LAYERS,ATTENTION
 from mmcv.cnn.bricks.transformer import build_transformer_layer
-from .mobilenet_v2 import InvertedResidual
-from mmcls.models.utils import to_2tuple
+from ..utils import InvertedResidual
+from mmcv.utils import to_2tuple
 from mmcv.runner import BaseModule
-from mmcls.models.builder import BACKBONES
+from ..builder import BACKBONES
 import einops
 try:
     from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttention
