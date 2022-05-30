@@ -549,6 +549,7 @@ class MobileViT(BaseModule):
         self.out_indices=out_indices
         self.init_cfg=init_cfg
         self.frozen_stages=frozen_stages
+        self.norm_eval=norm_eval
 
 
         # Segmentation architectures like Deeplab and PSPNet modifies the strides of the classification backbones
