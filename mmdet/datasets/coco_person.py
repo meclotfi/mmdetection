@@ -21,7 +21,7 @@ from .custom import CustomDataset
 
 
 @DATASETS.register_module()
-class CocoDataset(CustomDataset):
+class VwwDetection(CustomDataset):
 
     CLASSES = ('person')
 
@@ -48,8 +48,8 @@ class CocoDataset(CustomDataset):
                (191, 162, 208)]
     def __init__(self,
                  ann_file,
-                 img_person_ids,
                  pipeline,
+                 img_person_ids=None,
                  classes=None,
                  data_root=None,
                  img_prefix='',
@@ -80,7 +80,9 @@ class CocoDataset(CustomDataset):
                     or osp.isabs(self.proposal_file)):
                 self.proposal_file = osp.join(self.data_root,
                                               self.proposal_file)
-        a=np.load(img_person_ids)
+        a=None
+        if (img_person_ids is not None):
+             a=np.load(img_person_ids)
         # load annotations (and proposals)
         if hasattr(self.file_client, 'get_local_path'):
             with self.file_client.get_local_path(self.ann_file) as local_path:
@@ -121,7 +123,7 @@ class CocoDataset(CustomDataset):
         self.pipeline = Compose(pipeline)
 
 
-    def load_annotations(self, ann_file,img_ids):
+    def load_annotations(self, ann_file,img_ids=None):
         """Load annotation from COCO style annotation file.
 
         Args:
@@ -137,7 +139,10 @@ class CocoDataset(CustomDataset):
         self.cat_ids = self.coco.get_cat_ids(cat_names=self.CLASSES)
 
         self.cat2label = {cat_id: i for i, cat_id in enumerate(self.cat_ids)}
-        self.img_ids = img_ids
+        if img_ids is None:
+             self.img_ids = self.coco.get_img_ids()
+        else:
+            self.img_ids=img_ids
         data_infos = []
         total_ann_ids = []
         to_del=[]
@@ -154,7 +159,8 @@ class CocoDataset(CustomDataset):
             else: 
                 to_del.append(i)
             total_ann_ids.extend(ann_ids)
-        #self.img_ids = [x for x in self.img_ids if x not in to_del]
+        if (not img_ids):
+            self.img_ids = [x for x in self.img_ids if x not in to_del]
         assert len(set(total_ann_ids)) == len(
             total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
         return data_infos

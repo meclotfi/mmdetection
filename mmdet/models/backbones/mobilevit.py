@@ -1,30 +1,177 @@
+from turtle import forward
 import numpy as np
 from torch import nn, Tensor
 import math
 import torch
 from torch.nn import functional as F
 from typing import Optional, Dict, Tuple
-
+import math
 from mmcv.runner import BaseModule, ModuleList, _load_checkpoint
 from mmcv.cnn import ConvModule,build_norm_layer
 from torch import nn, Tensor
-from mmcv.cnn.bricks.registry import ACTIVATION_LAYERS
+from mmcv.cnn.bricks.registry import ACTIVATION_LAYERS,ATTENTION
 from mmcv.cnn.bricks.transformer import build_transformer_layer
+from .mobilenet_v2 import InvertedResidual
+from mmcls.models.utils import to_2tuple
+from mmcv.runner import BaseModule
+from mmcls.models.builder import BACKBONES
+import einops
+try:
+    from mmcv.ops.multi_scale_deform_attn import MultiScaleDeformableAttention
 
-from mmdet.models.builder import BACKBONES
+except ImportError:
+    print(
+        '`MultiScaleDeformableAttention` in MMCV has been moved to '
+        '`mmcv.ops.multi_scale_deform_attn`, please update your MMCV')
+    from mmcv.cnn.bricks.transformer import MultiScaleDeformableAttention
 
-from ..utils import AdaptivePadding
+# adding swish
+if ACTIVATION_LAYERS.get("Swish") is None:
+    @ACTIVATION_LAYERS.register_module()
+    class Swish(nn.SiLU):
+        def __init__(self, inplace: bool = False):
+            super(Swish, self).__init__(inplace=inplace)
 
-#@ACTIVATION_LAYERS.register_module()
-class Swish(nn.SiLU):
-    def __init__(self, inplace: bool = False):
-        super(Swish, self).__init__(inplace=inplace)
+if ATTENTION.get("MultiScaleDeformableAttentionL1") is None:
+    @ATTENTION.register_module()
+    class MultiScaleDeformableAttentionL1(MultiScaleDeformableAttention):
+        def __init__(self,
+                 embed_dims=256,
+                 num_heads=8,
+                 num_levels=4,
+                 num_points=4,
+                 im2col_step=16,
+                 dropout=0.1,
+                 batch_first=False,
+                 norm_cfg=None,
+                 init_cfg=None):
+            super().__init__(embed_dims=embed_dims,num_heads=num_heads,num_levels=num_levels,num_points=num_points,im2col_step=im2col_step,dropout=dropout,batch_first=batch_first,norm_cfg=norm_cfg,init_cfg=init_cfg)
+        @staticmethod
+        def get_reference_points(spatial_shapes, valid_ratios, device):
+            """Get the reference points used in decoder.
+            Args:
+                spatial_shapes (Tensor): The shape of all
+                    feature maps, has shape (num_level, 2).
+                valid_ratios (Tensor): The radios of valid
+                    points on the feature map, has shape
+                    (bs, num_levels, 2)
+                device (obj:`device`): The device where
+                    reference_points should be.
+            Returns:
+                Tensor: reference points used in decoder, has \
+                    shape (bs, num_keys, num_levels, 2).
+            """
+            reference_points_list = []
+            for lvl, (H, W) in enumerate(spatial_shapes):
+                #  TODO  check this 0.5
+                ref_y, ref_x = torch.meshgrid(
+                    torch.linspace(
+                        0.5, H - 0.5, H, dtype=torch.float32, device=device),
+                    torch.linspace(
+                        0.5, W - 0.5, W, dtype=torch.float32, device=device))
+                ref_y = ref_y.reshape(-1)[None] / (
+                    valid_ratios[:, None, lvl, 1] * H)
+                ref_x = ref_x.reshape(-1)[None] / (
+                    valid_ratios[:, None, lvl, 0] * W)
+                ref = torch.stack((ref_x, ref_y), -1)
+                reference_points_list.append(ref)
+            reference_points = torch.cat(reference_points_list, 1)
+            reference_points = reference_points[:, :, None] * valid_ratios[:, None]
+            return reference_points
+
+        def forward(self,
+                query,
+                key=None,
+                value=None,
+                identity=None,
+                query_pos=None,
+                key_padding_mask=None,
+                **kwargs):
+            num_patch=int(np.sqrt(query.shape[1]))
+            #print(query.shape)
+            #print(num_patch)
+            dev=query.device
+            Spatial_shapes=torch.tensor([[num_patch,num_patch]]).to(dev)
+            level_start_index=torch.tensor([0,num_patch**2]).to(dev)
+            valid_ratios = einops.repeat(torch.tensor([1.,1.]), 'n -> m k n',m=query.shape[0],k=1).to(dev)
+            reference_points =self.get_reference_points(Spatial_shapes,valid_ratios,device=dev)
+            return super().forward(query=query,key=key,value=value,identity=identity,query_pos=query_pos,key_padding_mask=None,level_start_index=level_start_index,reference_points=reference_points,spatial_shapes=Spatial_shapes, **kwargs)
+class AdaptivePadding(nn.Module):
+    """Applies padding to input (if needed) so that input can get fully covered
+    by filter you specified. It support two modes "same" and "corner". The
+    "same" mode is same with "SAME" padding mode in TensorFlow, pad zero around
+    input. The "corner"  mode would pad zero to bottom right.
+
+    Args:
+        kernel_size (int | tuple): Size of the kernel:
+        stride (int | tuple): Stride of the filter. Default: 1:
+        dilation (int | tuple): Spacing between kernel elements.
+            Default: 1
+        padding (str): Support "same" and "corner", "corner" mode
+            would pad zero to bottom right, and "same" mode would
+            pad zero around input. Default: "corner".
+    Example:
+        >>> kernel_size = 16
+        >>> stride = 16
+        >>> dilation = 1
+        >>> input = torch.rand(1, 1, 15, 17)
+        >>> adap_pad = AdaptivePadding(
+        >>>     kernel_size=kernel_size,
+        >>>     stride=stride,
+        >>>     dilation=dilation,
+        >>>     padding="corner")
+        >>> out = adap_pad(input)
+        >>> assert (out.shape[2], out.shape[3]) == (16, 32)
+        >>> input = torch.rand(1, 1, 16, 17)
+        >>> out = adap_pad(input)
+        >>> assert (out.shape[2], out.shape[3]) == (16, 32)
+    """
+
+    def __init__(self, kernel_size=1, stride=1, dilation=1, padding='corner'):
+
+        super(AdaptivePadding, self).__init__()
+
+        assert padding in ('same', 'corner')
+
+        kernel_size = to_2tuple(kernel_size)
+        stride = to_2tuple(stride)
+        padding = to_2tuple(padding)
+        dilation = to_2tuple(dilation)
+
+        self.padding = padding
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.dilation = dilation
+
+    def get_pad_shape(self, input_shape):
+        input_h, input_w = input_shape
+        kernel_h, kernel_w = self.kernel_size
+        stride_h, stride_w = self.stride
+        output_h = math.ceil(input_h / stride_h)
+        output_w = math.ceil(input_w / stride_w)
+        pad_h = max((output_h - 1) * stride_h +
+                    (kernel_h - 1) * self.dilation[0] + 1 - input_h, 0)
+        pad_w = max((output_w - 1) * stride_w +
+                    (kernel_w - 1) * self.dilation[1] + 1 - input_w, 0)
+        return pad_h, pad_w
+
+    def forward(self, x):
+        pad_h, pad_w = self.get_pad_shape(x.size()[-2:])
+        if pad_h > 0 or pad_w > 0:
+            if self.padding == 'corner':
+                x = F.pad(x, [0, pad_w, 0, pad_h])
+            elif self.padding == 'same':
+                x = F.pad(x, [
+                    pad_w // 2, pad_w - pad_w // 2, pad_h // 2,
+                    pad_h - pad_h // 2
+                ])
+        return x
 
 class MobileViTBlock(BaseModule):
     """
         MobileViT block: https://arxiv.org/abs/2110.02178?context=cs.LG
     """
-    def __init__(self, in_channels: int, transformer_dim: int, ffn_dim: int,
+    def __init__(self, in_channels: int, num_heads: int, ffn_dim: int,
                  n_transformer_blocks: Optional[int] = 2,
                  head_dim: Optional[int] = 32, attn_dropout: Optional[float] = 0.1,
                  dropout: Optional[int] = 0.1, ffn_dropout: Optional[int] = 0.1, patch_h: Optional[int] = 8,
@@ -35,8 +182,9 @@ class MobileViTBlock(BaseModule):
                  *args, **kwargs):
         
         super().__init__()
+        transformer_dim=head_dim*num_heads
         norm_cfg_v=dict(type='BN', requires_grad=True)
-        pad=AdaptivePadding( kernel_size=3, stride=1, dilation=1, padding='corner')
+        self.pad=AdaptivePadding( kernel_size=conv_ksize, stride=1, dilation=1, padding='corner')
         conv_3x3_in = ConvModule(
             in_channels=in_channels, out_channels=in_channels,padding=0,
             kernel_size=conv_ksize, stride=1, act_cfg=act_config, norm_cfg=norm_cfg_v, dilation=dilation
@@ -58,7 +206,7 @@ class MobileViTBlock(BaseModule):
             )
         
         self.local_rep = nn.Sequential()
-        self.local_rep.add_module(name="pad", module=pad)
+        self.local_rep.add_module(name="pad", module=self.pad)
         self.local_rep.add_module(name="conv_3x3", module=conv_3x3_in)
         self.local_rep.add_module(name="conv_1x1", module=conv_1x1_in)
         
@@ -68,7 +216,7 @@ class MobileViTBlock(BaseModule):
         ffn_dims = [ffn_dim] * n_transformer_blocks
         transformer_config=dict(
             type="BaseTransformerLayer",
-            attn_cfgs=dict(
+             attn_cfgs=dict(
                  type="MultiheadAttention",
                  embed_dims=transformer_dim,
                  num_heads=num_heads,
@@ -202,15 +350,12 @@ class MobileViTBlock(BaseModule):
 
     def forward(self, x: Tensor) -> Tensor:
         res = x
-        print(x.shape)
-
         fm = self.local_rep(x)
-        print(fm.shape)
         # convert feature map to patches
         patches, info_dict = self.unfolding(fm)
 
         # learn global representations
-        print(patches.shape)
+        
         patches = self.global_rep(patches)
 
         # [B x Patch x Patches x C] --> [B x C x Patches x Patch]
@@ -220,10 +365,71 @@ class MobileViTBlock(BaseModule):
 
         if self.fusion is not None:
             fm = self.fusion(
-                torch.cat((res, fm), dim=1)
+                self.pad(torch.cat((res, fm), dim=1))
             )
+        
         return fm
 
+head_dim=32
+num_heads=4
+mv2_exp_mult = 2
+LayersConfig={
+        "layer1": {
+                "type":"mobilenet2",
+                "out_channels": 16,
+                "expand_ratio": mv2_exp_mult,
+                "num_blocks": 1,
+                "stride": 1,
+                
+            },
+        "layer2": {
+                "type":"mobilenet2",
+                "out_channels": 24,
+                "expand_ratio": mv2_exp_mult,
+                "num_blocks": 3,
+                "stride": 2,
+                
+            },
+        "layer3": {  # 28x28
+                "type":"mobilevit",
+                "out_channels": 48,
+                "head_dim": 16,
+                "ffn_dim": 128,
+                "n_transformer_blocks": 2,
+                "patch_h": 2,  # 8,
+                "patch_w": 2,  # 8,
+                "stride": 2,
+                "mv_expand_ratio": mv2_exp_mult,
+                "num_heads": num_heads,
+                
+            },
+        "layer4": {  # 14x14
+                "type":"mobilevit",
+                "out_channels": 64,
+                "head_dim": 20,
+                "ffn_dim": 160,
+                "n_transformer_blocks": 4,
+                "patch_h": 2,  # 4,
+                "patch_w": 2,  # 4,
+                "stride": 2,
+                "mv_expand_ratio": mv2_exp_mult,
+                "num_heads": num_heads,
+                
+            },
+        "layer5": {  # 7x7
+                "type":"mobilevit",
+                "out_channels": 80,
+                "head_dim": 24,
+                "ffn_dim": 192,
+                "n_transformer_blocks": 3,
+                "patch_h": 2,
+                "patch_w": 2,
+                "stride": 2,
+                "mv_expand_ratio": mv2_exp_mult,
+                "num_heads": num_heads,
+                
+            },
+    }
 
 @BACKBONES.register_module()
 class MobileViT(BaseModule):
@@ -231,25 +437,32 @@ class MobileViT(BaseModule):
         MobileViT: https://arxiv.org/abs/2110.02178?context=cs.LG
     """
     def __init__(self,
-                 
-                 widen_factor=1.,
-                 out_indices=(1, 2, 4, 7),
+                 Layers_config=LayersConfig,
+                 out_indices=(1, 2, 4),
                  frozen_stages=-1,
                  conv_cfg=None,
                  norm_cfg=dict(type='BN'),
                  act_cfg=dict(type='Swish'),
+                 ffn_droput=0.0,
+                 attn_dropout=0.0,
+                 dropout=0.1,
                  norm_eval=False,
                  with_cp=False,
                  pretrained=None,
-                 init_cfg=None, *args, **kwargs) -> None:
-        num_classes = getattr(opts, "model.classification.n_classes", 1000)
-        classifier_dropout = getattr(opts, "model.classification.classifier_dropout", 0.2)
-
-        pool_type = getattr(opts, "model.layer.global_pool", "mean")
+                 init_cfg=[
+                     dict(type='Kaiming', layer=['Conv2d']),
+                     dict(type='Constant',
+                         val=1,
+                         layer=['_BatchNorm', 'GroupNorm']),
+                         dict(type='TruncNormal',layer=['Linear'])],
+                  *args, **kwargs) -> None:
+     
+        super(MobileViT, self).__init__(init_cfg)
         image_channels = 3
         out_channels = 16
+        self.act_cfg=act_cfg
+        self.out_indices=out_indices
 
-        mobilevit_config = get_configuration(opts=opts)
 
         # Segmentation architectures like Deeplab and PSPNet modifies the strides of the classification backbones
         # We allow that using `output_stride` arguments
@@ -266,129 +479,65 @@ class MobileViT(BaseModule):
 
         # store model configuration in a dictionary
         self.model_conf_dict = dict()
-        self.conv_1 = ConvLayer(
-                opts=opts, in_channels=image_channels, out_channels=out_channels,
-                kernel_size=3, stride=2, use_norm=True, use_act=True
-            )
+        self.pad=AdaptivePadding( kernel_size=3, stride=1, dilation=1, padding='corner')
+        self.conv1 = ConvModule(
+            in_channels=image_channels, out_channels=out_channels,
+            kernel_size=3, stride=2, act_cfg=act_cfg, norm_cfg=norm_cfg
+        )
 
         self.model_conf_dict['conv1'] = {'in': image_channels, 'out': out_channels}
 
+    
+        self.layers=ModuleList()
+        
+        for config in Layers_config.keys():
+            in_channels = out_channels
+            self.layer, out_channels = self._make_layer(input_channel=in_channels, cfg=Layers_config[config],dropout=dropout,attn_dropout=attn_dropout,ffn_dropout=ffn_droput)
+            self.model_conf_dict[config] = {'in': in_channels, 'out': out_channels}
+            self.layers.append(self.layer)
+        
         in_channels = out_channels
-        self.layer_1, out_channels = self._make_layer(
-            opts=opts, input_channel=in_channels, cfg=mobilevit_config["layer1"]
-        )
-        self.model_conf_dict['layer1'] = {'in': in_channels, 'out': out_channels}
-
-        in_channels = out_channels
-        self.layer_2, out_channels = self._make_layer(
-            opts=opts, input_channel=in_channels, cfg=mobilevit_config["layer2"]
-        )
-        self.model_conf_dict['layer2'] = {'in': in_channels, 'out': out_channels}
-
-        in_channels = out_channels
-        self.layer_3, out_channels = self._make_layer(
-            opts=opts, input_channel=in_channels, cfg=mobilevit_config["layer3"]
-        )
-        self.model_conf_dict['layer3'] = {'in': in_channels, 'out': out_channels}
-
-        in_channels = out_channels
-        self.layer_4, out_channels = self._make_layer(
-            opts=opts, input_channel=in_channels, cfg=mobilevit_config["layer4"], dilate=dilate_l4
-        )
-        self.model_conf_dict['layer4'] = {'in': in_channels, 'out': out_channels}
-
-        in_channels = out_channels
-        self.layer_5, out_channels = self._make_layer(
-            opts=opts, input_channel=in_channels, cfg=mobilevit_config["layer5"], dilate=dilate_l5
-        )
-        self.model_conf_dict['layer5'] = {'in': in_channels, 'out': out_channels}
-
-        in_channels = out_channels
-        exp_channels = min(mobilevit_config["last_layer_exp_factor"] * in_channels, 960)
-        self.conv_1x1_exp = ConvLayer(
-                opts=opts, in_channels=in_channels, out_channels=exp_channels,
-                kernel_size=1, stride=1, use_act=True, use_norm=True
-            )
-
-        self.model_conf_dict['exp_before_cls'] = {'in': in_channels, 'out': exp_channels}
-
-        self.classifier = nn.Sequential()
-        self.classifier.add_module(name="global_pool", module=GlobalPool(pool_type=pool_type, keep_dim=False))
-        if 0.0 < classifier_dropout < 1.0:
-            self.classifier.add_module(name="dropout", module=Dropout(p=classifier_dropout, inplace=True))
-        self.classifier.add_module(
-            name="fc",
-            module=LinearLayer(in_features=exp_channels, out_features=num_classes, bias=True)
-        )
-
+        exp_channels = min(2 * in_channels, 128)
+        self.conv_1x1_exp = ConvModule( in_channels=in_channels, out_channels=exp_channels,kernel_size=1, stride=1, act_cfg=act_cfg, norm_cfg=norm_cfg)
         # check model
-        self.check_model()
+        #self.check_model()
 
         # weight initialization
-        self.reset_parameters(opts=opts)
+        #self.reset_parameters(opts=opts)
 
-    @classmethod
-    def add_arguments(cls, parser: argparse.ArgumentParser):
-        group = parser.add_argument_group(title="".format(cls.__name__), description="".format(cls.__name__))
-        group.add_argument('--model.classification.mit.mode', type=str, default=None,
-                           choices=['xx_small', 'x_small', 'small'], help="MIT mode")
-        group.add_argument('--model.classification.mit.attn-dropout', type=float, default=0.1,
-                           help="Dropout in attention layer")
-        group.add_argument('--model.classification.mit.ffn-dropout', type=float, default=0.0,
-                           help="Dropout between FFN layers")
-        group.add_argument('--model.classification.mit.dropout', type=float, default=0.1,
-                           help="Dropout in Transformer layer")
-        group.add_argument('--model.classification.mit.transformer-norm-layer', type=str, default="layer_norm",
-                           help="Normalization layer in transformer")
-        group.add_argument('--model.classification.mit.no-fuse-local-global-features', action="store_true",
-                           help="Do not combine local and global features in MIT block")
-        group.add_argument('--model.classification.mit.conv-kernel-size', type=int, default=3,
-                           help="Kernel size of Conv layers in MIT block")
-
-        group.add_argument('--model.classification.mit.head-dim', type=int, default=None,
-                           help="Head dimension in transformer")
-        group.add_argument('--model.classification.mit.number-heads', type=int, default=None,
-                           help="No. of heads in transformer")
-        return parser
-
-    def _make_layer(self, opts, input_channel, cfg: Dict, dilate: Optional[bool] = False) -> Tuple[nn.Sequential, int]:
-        block_type = cfg.get("block_type", "mobilevit")
+    def _make_layer(self, input_channel, cfg: Dict,dropout,attn_dropout,ffn_dropout, dilate: Optional[bool] = False) -> Tuple[nn.Sequential, int]:
+        copied_cfg = cfg.copy()
+        block_type = copied_cfg.pop("type","mobilenet")
         if block_type.lower() == "mobilevit":
             return self._make_mit_layer(
-                opts=opts,
                 input_channel=input_channel,
-                cfg=cfg,
+                cfg=copied_cfg,
+                dropout=dropout,
+                attn_dropout=attn_dropout,
+                ffn_dropout=ffn_dropout,
                 dilate=dilate
             )
         else:
             return self._make_mobilenet_layer(
-                opts=opts,
                 input_channel=input_channel,
-                cfg=cfg
+                cfg=copied_cfg
             )
 
     @staticmethod
-    def _make_mobilenet_layer(opts, input_channel: int, cfg: Dict) -> Tuple[nn.Sequential, int]:
+    def _make_mobilenet_layer(input_channel: int, cfg: Dict) -> Tuple[nn.Sequential, int]:
         output_channels = cfg.get("out_channels")
-        num_blocks = cfg.get("num_blocks", 2)
-        expand_ratio = cfg.get("expand_ratio", 4)
+        num_blocks = cfg.pop("num_blocks",1)
+        stride=cfg.pop("stride",1)
         block = []
 
         for i in range(num_blocks):
-            stride = cfg.get("stride", 1) if i == 0 else 1
-
-            layer = InvertedResidual(
-                opts=opts,
-                in_channels=input_channel,
-                out_channels=output_channels,
-                stride=stride,
-                expand_ratio=expand_ratio
-            )
+            stride=stride if i==0 else 1
+            layer = InvertedResidual(in_channels=input_channel,stride=stride,**cfg)
             block.append(layer)
             input_channel = output_channels
         return nn.Sequential(*block), input_channel
 
-    def _make_mit_layer(self, opts, input_channel, cfg: Dict, dilate: Optional[bool] = False) -> Tuple[nn.Sequential, int]:
+    def _make_mit_layer(self, input_channel, cfg: Dict,dropout,attn_dropout,ffn_dropout, dilate: Optional[bool] = False) -> Tuple[nn.Sequential, int]:
         prev_dilation = self.dilation
         block = []
         stride = cfg.get("stride", 1)
@@ -399,46 +548,37 @@ class MobileViT(BaseModule):
                 stride = 1
 
             layer = InvertedResidual(
-                opts=opts,
                 in_channels=input_channel,
                 out_channels=cfg.get("out_channels"),
                 stride=stride,
-                expand_ratio=cfg.get("mv_expand_ratio", 4),
-                dilation=prev_dilation
+                expand_ratio=cfg.get("mv_expand_ratio", 4)
             )
 
             block.append(layer)
             input_channel = cfg.get("out_channels")
 
-        head_dim = cfg.get("head_dim", 32)
-        transformer_dim = cfg["transformer_channels"]
-        ffn_dim = cfg.get("ffn_dim")
-        if head_dim is None:
-            num_heads = cfg.get("num_heads", 4)
-            if num_heads is None:
-                num_heads = 4
-            head_dim = transformer_dim // num_heads
-
-        if transformer_dim % head_dim != 0:
-            logger.error("Transformer input dimension should be divisible by head dimension. "
-                         "Got {} and {}.".format(transformer_dim, head_dim))
-
         block.append(
             MobileViTBlock(
-                opts=opts,
                 in_channels=input_channel,
-                transformer_dim=transformer_dim,
-                ffn_dim=ffn_dim,
-                n_transformer_blocks=cfg.get("transformer_blocks", 1),
-                patch_h=cfg.get("patch_h", 2),
-                patch_w=cfg.get("patch_w", 2),
-                dropout=getattr(opts, "model.classification.mit.dropout", 0.1),
-                ffn_dropout=getattr(opts, "model.classification.mit.ffn_dropout", 0.0),
-                attn_dropout=getattr(opts, "model.classification.mit.attn_dropout", 0.1),
-                head_dim=head_dim,
-                no_fusion=getattr(opts, "model.classification.mit.no_fuse_local_global_features", False),
-                conv_ksize=getattr(opts, "model.classification.mit.conv_kernel_size", 3)
+                dropout=dropout,
+                ffn_dropout=ffn_dropout,
+                attn_dropout=attn_dropout,
+                **cfg
             )
         )
 
         return nn.Sequential(*block), input_channel
+    
+    def forward(self, x):
+        x=self.pad(x)
+        x = self.conv1(x)
+
+        outs = []
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            if i in self.out_indices:
+                outs.append(x)
+            
+        
+        #out=self.conv_1x1_exp(x)
+        return outs
