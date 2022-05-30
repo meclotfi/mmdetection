@@ -78,16 +78,28 @@ class CocoDataset(CustomDataset):
         self.img_ids = self.coco.get_img_ids()
         data_infos = []
         total_ann_ids = []
+        to_del=[]
         for i in self.img_ids:
             info = self.coco.load_imgs([i])[0]
             info['filename'] = info['file_name']
-            data_infos.append(info)
             ann_ids = self.coco.get_ann_ids(img_ids=[i])
+            ann_info=self.coco.load_anns(ann_ids)
+            for ann in ann_info:
+                if ann['category_id']!=1:
+                    ann_ids.remove(ann['id'])
+            if ann_ids:
+                data_infos.append(info)
+            else: 
+                to_del.append(i)
             total_ann_ids.extend(ann_ids)
+        self.img_ids = [x for x in self.img_ids if x not in to_del]
         assert len(set(total_ann_ids)) == len(
             total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
         return data_infos
 
+    def del_at_index(l,index_list):
+        for ind in index_list:
+            l.pop()
     def get_ann_info(self, idx):
         """Get COCO annotation by index.
 

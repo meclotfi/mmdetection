@@ -1,154 +1,228 @@
-#
-# For licensing see accompanying LICENSE file.
-# Copyright (C) 2020 Apple Inc. All Rights Reserved.
-#
-
-from cv2 import norm
-from torch import nn
-import argparse
-from typing import Dict, Tuple, Optional
+import numpy as np
 from torch import nn, Tensor
+import math
+import torch
+from torch.nn import functional as F
+from typing import Optional, Dict, Tuple
 
-from utils import logger
-from mmcv.runner import BaseModule
+from mmcv.runner import BaseModule, ModuleList, _load_checkpoint
+from mmcv.cnn import ConvModule,build_norm_layer
+from torch import nn, Tensor
+from mmcv.cnn.bricks.registry import ACTIVATION_LAYERS
+from mmcv.cnn.bricks.transformer import build_transformer_layer
 
-from ..builder import BACKBONES
-from mmcv.cnn.bricks import ConvModule
-from mmcv.cnn.bricks.registry import PLUGIN_LAYERS
-from mobilenet.layers import norm_layers_tuple
-from mobilenet.misc.profiler import module_profile
-from mobilenet.misc.init_utils import initialize_weights
-from mobilenet.layers import ConvLayer, LinearLayer, GlobalPool, Dropout, SeparableConv
-from mobilenet.modules import InvertedResidual, MobileViTBlock
+from mmdet.models.builder import BACKBONES
 
+from ..utils import AdaptivePadding
 
-@PLUGIN_LAYERS.register_module("Swish")
+#@ACTIVATION_LAYERS.register_module()
 class Swish(nn.SiLU):
     def __init__(self, inplace: bool = False):
         super(Swish, self).__init__(inplace=inplace)
 
-    def profile_module(self, input: Tensor) -> Tuple(Tensor, float, float):
-        return input, 0.0, 0.0
-d_opts={
-    "model":{
-         "classification":{
-                            "name": "mobilevit",
-                            "classifier_dropout": 0.1,
-                            "mit":{
-                                    "mode": "small",
-                                    "ffn_dropout": 0.0,
-                                    "attn_dropout": 0.0,
-                                    "dropout": 0.1,
-                                    "number_heads": 4,
-                                    "no_fuse_local_global_features": False,
-                                    "conv_kernel_size": 3,
-                                },
-                            "activation":{"name": "swish"},
-                            "pretrained":"https://docs-assets.developer.apple.com/ml-research/models/cvnets/classification/mobilevit_s.pt"
-                           },
-        "normalization":{
-            "name": "sync_batch_norm",
-            "momentum": 0.1
-            },
-        "activation":{
-            "name": "relu", 
-            "inplace": False
-        },
-        "layer":{
-            "global_pool": "mean",
-            "conv_init": "kaiming_normal",
-            "linear_init": "normal",
-            "conv_weight_std": False
+class MobileViTBlock(BaseModule):
+    """
+        MobileViT block: https://arxiv.org/abs/2110.02178?context=cs.LG
+    """
+    def __init__(self, in_channels: int, transformer_dim: int, ffn_dim: int,
+                 n_transformer_blocks: Optional[int] = 2,
+                 head_dim: Optional[int] = 32, attn_dropout: Optional[float] = 0.1,
+                 dropout: Optional[int] = 0.1, ffn_dropout: Optional[int] = 0.1, patch_h: Optional[int] = 8,
+                 patch_w: Optional[int] = 8, transformer_norm_layer: Optional[str] = "layer_norm",
+                 conv_ksize: Optional[int] = 3,
+                 dilation: Optional[int] = 1, var_ffn: Optional[bool] = False,
+                 no_fusion: Optional[bool] = False,act_config=dict(type="Swish"),norm_cfg=dict(type='LN'),
+                 *args, **kwargs):
+        
+        super().__init__()
+        norm_cfg_v=dict(type='BN', requires_grad=True)
+        pad=AdaptivePadding( kernel_size=3, stride=1, dilation=1, padding='corner')
+        conv_3x3_in = ConvModule(
+            in_channels=in_channels, out_channels=in_channels,padding=0,
+            kernel_size=conv_ksize, stride=1, act_cfg=act_config, norm_cfg=norm_cfg_v, dilation=dilation
+        )
+        conv_1x1_in = ConvModule(
+            in_channels=in_channels, out_channels=transformer_dim,padding=0,
+            kernel_size=1, stride=1, act_cfg=act_config,norm_cfg=norm_cfg_v
+        )
+
+        conv_1x1_out = ConvModule(
+             in_channels=transformer_dim, out_channels=in_channels,padding=0,
+            kernel_size=1, stride=1, act_cfg=act_config,norm_cfg=norm_cfg_v
+        )
+        conv_3x3_out = None
+        if not no_fusion:
+            conv_3x3_out = ConvModule(
+                in_channels=2 * in_channels, out_channels=in_channels,padding=0,
+                kernel_size=conv_ksize, stride=1, act_cfg=act_config, norm_cfg=norm_cfg_v
+            )
+        
+        self.local_rep = nn.Sequential()
+        self.local_rep.add_module(name="pad", module=pad)
+        self.local_rep.add_module(name="conv_3x3", module=conv_3x3_in)
+        self.local_rep.add_module(name="conv_1x1", module=conv_1x1_in)
+        
+        assert transformer_dim % head_dim == 0
+        num_heads = transformer_dim // head_dim
+
+        ffn_dims = [ffn_dim] * n_transformer_blocks
+        transformer_config=dict(
+            type="BaseTransformerLayer",
+            attn_cfgs=dict(
+                 type="MultiheadAttention",
+                 embed_dims=transformer_dim,
+                 num_heads=num_heads,
+                 attn_drop=attn_dropout,
+                 proj_drop=ffn_dropout,
+                 dropout_layer=dict(type='Dropout', drop_prob=dropout),
+                 batch_first=True,
+            ),
+            ffn_cfgs=dict(
+                type='FFN',
+                embed_dims=transformer_dim,
+                feedforward_channels=ffn_dim,
+                num_fcs=2,
+                ffn_drop=0.,
+                act_cfg=dict(type='ReLU', inplace=True),
+                 ),
+            operation_order=('norm','self_attn', 'norm', 'ffn','norm'),
+            norm_cfg=dict(type='LN'),
+            batch_first=True,)
+
+        global_rep = build_transformer_layer(transformer_config)
+        self.global_rep = global_rep
+
+        self.conv_proj = conv_1x1_out
+
+        self.fusion = conv_3x3_out
+
+        self.patch_h = patch_h
+        self.patch_w = patch_w
+        self.patch_area = self.patch_w * self.patch_h
+
+        self.cnn_in_dim = in_channels
+        self.cnn_out_dim = transformer_dim
+        self.n_heads = num_heads
+        self.ffn_dim = ffn_dim
+        self.dropout = dropout
+        self.attn_dropout = attn_dropout
+        self.ffn_dropout = ffn_dropout
+        self.dilation = dilation
+        self.ffn_max_dim = ffn_dims[0]
+        self.ffn_min_dim = ffn_dims[-1]
+        self.var_ffn = var_ffn
+        self.n_blocks = n_transformer_blocks
+        self.conv_ksize = conv_ksize
+
+    def __repr__(self):
+        repr_str = "{}(".format(self.__class__.__name__)
+        repr_str += "\n\tconv_in_dim={}, conv_out_dim={}, dilation={}, conv_ksize={}".format(self.cnn_in_dim, self.cnn_out_dim, self.dilation, self.conv_ksize)
+        repr_str += "\n\tpatch_h={}, patch_w={}".format(self.patch_h, self.patch_w)
+        repr_str += "\n\ttransformer_in_dim={}, transformer_n_heads={}, transformer_ffn_dim={}, dropout={}, " \
+                    "ffn_dropout={}, attn_dropout={}, blocks={}".format(
+            self.cnn_out_dim,
+            self.n_heads,
+            self.ffn_dim,
+            self.dropout,
+            self.ffn_dropout,
+            self.attn_dropout,
+            self.n_blocks
+        )
+        if self.var_ffn:
+            repr_str += "\n\t var_ffn_min_mult={}, var_ffn_max_mult={}".format(
+                self.ffn_min_dim, self.ffn_max_dim
+            )
+
+        repr_str += "\n)"
+        return repr_str
+
+    def unfolding(self, feature_map: Tensor) -> Tuple[Tensor, Dict]:
+        patch_w, patch_h = self.patch_w, self.patch_h
+        patch_area = int(patch_w * patch_h)
+        batch_size, in_channels, orig_h, orig_w = feature_map.shape
+
+        new_h = int(math.ceil(orig_h / self.patch_h) * self.patch_h)
+        new_w = int(math.ceil(orig_w / self.patch_w) * self.patch_w)
+
+        interpolate = False
+        if new_w != orig_w or new_h != orig_h:
+            # Note: Padding can be done, but then it needs to be handled in attention function.
+            feature_map = F.interpolate(feature_map, size=(new_h, new_w), mode="bilinear", align_corners=False)
+            interpolate = True
+
+        # number of patches along width and height
+        num_patch_w = new_w // patch_w # n_w
+        num_patch_h = new_h // patch_h # n_h
+        num_patches = num_patch_h * num_patch_w # N
+
+        # [B, C, H, W] --> [B * C * n_h, p_h, n_w, p_w]
+        reshaped_fm = feature_map.reshape(batch_size * in_channels * num_patch_h, patch_h, num_patch_w, patch_w)
+        # [B * C * n_h, p_h, n_w, p_w] --> [B * C * n_h, n_w, p_h, p_w]
+        transposed_fm = reshaped_fm.transpose(1, 2)
+        # [B * C * n_h, n_w, p_h, p_w] --> [B, C, N, P] where P = p_h * p_w and N = n_h * n_w
+        reshaped_fm = transposed_fm.reshape(batch_size, in_channels, num_patches, patch_area)
+        # [B, C, N, P] --> [B, P, N, C]
+        transposed_fm = reshaped_fm.transpose(1, 3)
+        # [B, P, N, C] --> [BP, N, C]
+        patches = transposed_fm.reshape(batch_size * patch_area, num_patches, -1)
+
+        info_dict = {
+            "orig_size": (orig_h, orig_w),
+            "batch_size": batch_size,
+            "interpolate": interpolate,
+            "total_patches": num_patches,
+            "num_patches_w": num_patch_w,
+            "num_patches_h": num_patch_h
         }
-}
-}
 
-mv2_exp_mult = 4
-head_dim=32
-config = {
-            "layer1": {
-                "out_channels": 32,
-                "expand_ratio": mv2_exp_mult,
-                "num_blocks": 1,
-                "stride": 1,
-                "block_type": "mv2"
-            },
-            "layer2": {
-                "out_channels": 64,
-                "expand_ratio": mv2_exp_mult,
-                "num_blocks": 3,
-                "stride": 2,
-                "block_type": "mv2"
-            },
-            "layer3": {  # 28x28
-                "out_channels": 96,
-                "transformer_channels": 144,
-                "ffn_dim": 288,
-                "transformer_blocks": 2,
-                "patch_h": 2,
-                "patch_w": 2,
-                "stride": 2,
-                "mv_expand_ratio": mv2_exp_mult,
-                "head_dim": 4,
-                "num_heads": 4,
-                "block_type": "mobilevit"
-            },
-            "layer4": {  # 14x14
-                "out_channels": 128,
-                "transformer_channels": 192,
-                "ffn_dim": 384,
-                "transformer_blocks": 4,
-                "patch_h": 2,
-                "patch_w": 2,
-                "stride": 2,
-                "mv_expand_ratio": mv2_exp_mult,
-                "head_dim": head_dim,
-                "num_heads": 4,
-                "block_type": "mobilevit"
-            },
-            "layer5": {  # 7x7
-                "out_channels": 160,
-                "transformer_channels": 240,
-                "ffn_dim": 480,
-                "transformer_blocks": 3,
-                "patch_h": 2,
-                "patch_w": 2,
-                "stride": 2,
-                "mv_expand_ratio": mv2_exp_mult,
-                "head_dim": head_dim,
-                "num_heads": 4,
-                "block_type": "mobilevit"
-            },
-            "last_layer_exp_factor": 4
-        }
-def parameter_list(named_parameters, weight_decay: float = 0.0, no_decay_bn_filter_bias: bool = False):
-    with_decay = []
-    without_decay = []
-    if isinstance(named_parameters, list):
-        for n_parameter in named_parameters:
-            for p_name, param in n_parameter():
-                if param.requires_grad and len(param.shape) == 1 and no_decay_bn_filter_bias:
-                    # biases and normalization layer parameters are of len 1
-                    without_decay.append(param)
-                elif param.requires_grad:
-                    with_decay.append(param)
-    else:
-        for p_name, param in named_parameters():
-            if param.requires_grad and len(param.shape) == 1 and no_decay_bn_filter_bias:
-                # biases and normalization layer parameters are of len 1
-                without_decay.append(param)
-            elif param.requires_grad:
-                with_decay.append(param)
-    param_list = [{'params': with_decay, 'weight_decay': weight_decay}]
-    if len(without_decay) > 0:
-        param_list.append({'params': without_decay, 'weight_decay': 0.0})
-    return param_list
+        return patches, info_dict
 
+    def folding(self, patches: Tensor, info_dict: Dict) -> Tensor:
+        n_dim = patches.dim()
+        assert n_dim == 3, "Tensor should be of shape BPxNxC. Got: {}".format(patches.shape)
+        # [BP, N, C] --> [B, P, N, C]
+        patches = patches.contiguous().view(info_dict["batch_size"], self.patch_area, info_dict["total_patches"], -1)
 
+        batch_size, pixels, num_patches, channels = patches.size()
+        num_patch_h = info_dict["num_patches_h"]
+        num_patch_w = info_dict["num_patches_w"]
 
+        # [B, P, N, C] --> [B, C, N, P]
+        patches = patches.transpose(1, 3)
 
+        # [B, C, N, P] --> [B*C*n_h, n_w, p_h, p_w]
+        feature_map = patches.reshape(batch_size * channels * num_patch_h, num_patch_w, self.patch_h, self.patch_w)
+        # [B*C*n_h, n_w, p_h, p_w] --> [B*C*n_h, p_h, n_w, p_w]
+        feature_map = feature_map.transpose(1, 2)
+        # [B*C*n_h, p_h, n_w, p_w] --> [B, C, H, W]
+        feature_map = feature_map.reshape(batch_size, channels, num_patch_h * self.patch_h, num_patch_w * self.patch_w)
+        if info_dict["interpolate"]:
+            feature_map = F.interpolate(feature_map, size=info_dict["orig_size"], mode="bilinear", align_corners=False)
+        return feature_map
 
+    def forward(self, x: Tensor) -> Tensor:
+        res = x
+        print(x.shape)
 
+        fm = self.local_rep(x)
+        print(fm.shape)
+        # convert feature map to patches
+        patches, info_dict = self.unfolding(fm)
+
+        # learn global representations
+        print(patches.shape)
+        patches = self.global_rep(patches)
+
+        # [B x Patch x Patches x C] --> [B x C x Patches x Patch]
+        fm = self.folding(patches=patches, info_dict=info_dict)
+
+        fm = self.conv_proj(fm)
+
+        if self.fusion is not None:
+            fm = self.fusion(
+                torch.cat((res, fm), dim=1)
+            )
+        return fm
 
 
 @BACKBONES.register_module()
@@ -157,33 +231,25 @@ class MobileViT(BaseModule):
         MobileViT: https://arxiv.org/abs/2110.02178?context=cs.LG
     """
     def __init__(self,
-        out_indices=(1, 2, 3, 4),
-        opts=d_opts,
-        mobilevit_config=config,
-        act_cfg=dict(type="Swish"),
-        norm_cfg=dict(type='LN'),
-        pretrained="https://docs-assets.developer.apple.com/ml-research/models/cvnets/classification/mobilevit_s.pth",
-        *args, **kwargs) -> None:
-        
+                 
+                 widen_factor=1.,
+                 out_indices=(1, 2, 4, 7),
+                 frozen_stages=-1,
+                 conv_cfg=None,
+                 norm_cfg=dict(type='BN'),
+                 act_cfg=dict(type='Swish'),
+                 norm_eval=False,
+                 with_cp=False,
+                 pretrained=None,
+                 init_cfg=None, *args, **kwargs) -> None:
+        num_classes = getattr(opts, "model.classification.n_classes", 1000)
+        classifier_dropout = getattr(opts, "model.classification.classifier_dropout", 0.2)
 
-        self.out_indices=out_indices
-        if isinstance(pretrained, str):
-            self.init_cfg = dict(type='Pretrained', checkpoint=pretrained)
-        elif pretrained is None:
-            self.init_cfg = None
-        else:
-            raise TypeError('pretrained must be a str or None')
-
-        super(MobileViT, self).__init__(init_cfg=self.init_cfg)
-
-        #num_classes = getattr(opts, "model.classification.n_classes", 1000)
-        classifier_dropout = classifier_dropout
-
-        pool_type = "mean"
+        pool_type = getattr(opts, "model.layer.global_pool", "mean")
         image_channels = 3
         out_channels = 16
 
-        mobilevit_config = mobilevit_config
+        mobilevit_config = get_configuration(opts=opts)
 
         # Segmentation architectures like Deeplab and PSPNet modifies the strides of the classification backbones
         # We allow that using `output_stride` arguments
@@ -200,9 +266,9 @@ class MobileViT(BaseModule):
 
         # store model configuration in a dictionary
         self.model_conf_dict = dict()
-        self.conv_1 = ConvModule(
+        self.conv_1 = ConvLayer(
                 opts=opts, in_channels=image_channels, out_channels=out_channels,
-                kernel_size=3, stride=2,act_cfg=act_cfg, norm_cfg=norm_cfg
+                kernel_size=3, stride=2, use_norm=True, use_act=True
             )
 
         self.model_conf_dict['conv1'] = {'in': image_channels, 'out': out_channels}
@@ -239,8 +305,21 @@ class MobileViT(BaseModule):
 
         in_channels = out_channels
         exp_channels = min(mobilevit_config["last_layer_exp_factor"] * in_channels, 960)
+        self.conv_1x1_exp = ConvLayer(
+                opts=opts, in_channels=in_channels, out_channels=exp_channels,
+                kernel_size=1, stride=1, use_act=True, use_norm=True
+            )
 
         self.model_conf_dict['exp_before_cls'] = {'in': in_channels, 'out': exp_channels}
+
+        self.classifier = nn.Sequential()
+        self.classifier.add_module(name="global_pool", module=GlobalPool(pool_type=pool_type, keep_dim=False))
+        if 0.0 < classifier_dropout < 1.0:
+            self.classifier.add_module(name="dropout", module=Dropout(p=classifier_dropout, inplace=True))
+        self.classifier.add_module(
+            name="fc",
+            module=LinearLayer(in_features=exp_channels, out_features=num_classes, bias=True)
+        )
 
         # check model
         self.check_model()
@@ -363,172 +442,3 @@ class MobileViT(BaseModule):
         )
 
         return nn.Sequential(*block), input_channel
-    
-    def check_model(self):
-        assert self.model_conf_dict, "Model configuration dictionary should not be empty"
-        assert self.conv_1 is not None, 'Please implement self.conv_1'
-        assert self.layer_1 is not None, 'Please implement self.layer_1'
-        assert self.layer_2 is not None, 'Please implement self.layer_2'
-        assert self.layer_3 is not None, 'Please implement self.layer_3'
-        assert self.layer_4 is not None, 'Please implement self.layer_4'
-        assert self.layer_5 is not None, 'Please implement self.layer_5'
-        assert self.conv_1x1_exp is not None, 'Please implement self.conv_1x1_exp'
-        assert self.classifier is not None, 'Please implement self.classifier'
-
-    def reset_parameters(self, opts):
-        initialize_weights(opts=opts, modules=self.modules())
-
-    def extract_end_points_all(self, x: Tensor, use_l5: Optional[bool] = True, use_l5_exp: Optional[bool] = False) -> Dict:
-        out_dict = {} # Use dictionary over NamedTuple so that JIT is happy
-        x = self.conv_1(x)  # 112 x112
-        x = self.layer_1(x)  # 112 x112
-        out_dict["out_l1"] = x
-
-        x = self.layer_2(x)  # 56 x 56
-        out_dict["out_l2"] = x
-
-        x = self.layer_3(x)  # 28 x 28
-        out_dict["out_l3"] = x
-
-        x = self.layer_4(x)  # 14 x 14
-        out_dict["out_l4"] = x
-
-        if use_l5:
-            x = self.layer_5(x)  # 7 x 7
-            out_dict["out_l5"] = x
-
-            if use_l5_exp:
-                x = self.conv_1x1_exp(x)
-                out_dict["out_l5_exp"] = x
-        return out_dict
-    def extract_end_points_l4(self, x: Tensor) -> Dict:
-        return self.extract_end_points_all(x, use_l5=False)
-
-    def extract_features(self, x: Tensor):
-        outs=[]
-        x = self.conv_1(x)
-        if 0 in self.out_indices:
-            outs.append(x)
-        x = self.layer_1(x)
-        if 1 in self.out_indices:
-            outs.append(x)
-        x = self.layer_2(x)
-        if 2 in self.out_indices:
-            outs.append(x)
-        x = self.layer_3(x)
-        if 3 in self.out_indices:
-            outs.append(x)
-        x = self.layer_4(x)
-        if 4 in self.out_indices:
-            outs.append(x)
-        x = self.layer_5(x)
-        if 5 in self.out_indices:
-            outs.append(x)
-        return outs
-
-    def forward(self, x: Tensor):
-        return self.extract_features(x)
-
-    def freeze_norm_layers(self):
-        for m in self.modules():
-            if isinstance(m, norm_layers_tuple):
-                m.eval()
-                m.weight.requires_grad = False
-                m.bias.requires_grad = False
-                m.training = False
-
-    def get_trainable_parameters(self, weight_decay: float = 0.0, no_decay_bn_filter_bias: bool = False):
-        param_list = parameter_list(named_parameters=self.named_parameters,
-                                    weight_decay=weight_decay,
-                                    no_decay_bn_filter_bias=no_decay_bn_filter_bias)
-        return param_list, [1.0] * len(param_list)
-
-    @staticmethod
-    def _profile_layers(layers, input, overall_params, overall_macs):
-        if not isinstance(layers, list):
-            layers = [layers]
-
-        for layer in layers:
-            if layer is None:
-                continue
-            input, layer_param, layer_macs = module_profile(module=layer, x=input)
-
-            overall_params += layer_param
-            overall_macs += layer_macs
-
-            if isinstance(layer, nn.Sequential):
-                module_name = "\n+".join([l.__class__.__name__ for l in layer])
-            else:
-                module_name = layer.__class__.__name__
-            print(
-                '{:<15} \t {:<5}: {:>8.3f} M \t {:<5}: {:>8.3f} M'.format(module_name,
-                                                                          'Params',
-                                                                          round(layer_param / 1e6, 3),
-                                                                          'MACs',
-                                                                          round(layer_macs / 1e6, 3)
-                                                                          ))
-            logger.singe_dash_line()
-        return input, overall_params, overall_macs
-
-    def profile_model(self, input: Tensor, is_classification: bool = True) -> Tuple(Tensor or Dict[Tensor], float, float):
-        # Note: Model profiling is for reference only and may contain errors.
-        # It relies heavily on the user to implement the underlying functions accurately.
-        overall_params, overall_macs = 0.0, 0.0
-
-        if is_classification:
-            logger.log('Model statistics for an input of size {}'.format(input.size()))
-            logger.double_dash_line(dashes=65)
-            print('{:>35} Summary'.format(self.__class__.__name__))
-            logger.double_dash_line(dashes=65)
-
-        out_dict = {}
-        input, overall_params, overall_macs = self._profile_layers([self.conv_1, self.layer_1], input=input, overall_params=overall_params, overall_macs=overall_macs)
-        out_dict["out_l1"] = input
-
-        input, overall_params, overall_macs = self._profile_layers(self.layer_2, input=input,
-                                                                   overall_params=overall_params,
-                                                                   overall_macs=overall_macs)
-        out_dict["out_l2"] = input
-
-        input, overall_params, overall_macs = self._profile_layers(self.layer_3, input=input,
-                                                                   overall_params=overall_params,
-                                                                   overall_macs=overall_macs)
-        out_dict["out_l3"] = input
-
-        input, overall_params, overall_macs = self._profile_layers(self.layer_4, input=input,
-                                                                   overall_params=overall_params,
-                                                                   overall_macs=overall_macs)
-        out_dict["out_l4"] = input
-
-        input, overall_params, overall_macs = self._profile_layers(self.layer_5, input=input,
-                                                                   overall_params=overall_params,
-                                                                   overall_macs=overall_macs)
-        out_dict["out_l5"] = input
-
-        if self.conv_1x1_exp is not None:
-            input, overall_params, overall_macs = self._profile_layers(self.conv_1x1_exp, input=input,
-                                                                       overall_params=overall_params,
-                                                                       overall_macs=overall_macs)
-            out_dict["out_l5_exp"] = input
-
-        if is_classification:
-            classifier_params, classifier_macs = 0.0, 0.0
-            if self.classifier is not None:
-                input, classifier_params, classifier_macs = module_profile(module=self.classifier, x=input)
-                print('{:<15} \t {:<5}: {:>8.3f} M \t {:<5}: {:>8.3f} M'.format('Classifier',
-                                                                                'Params',
-                                                                                round(classifier_params / 1e6, 3),
-                                                                                'MACs',
-                                                                                round(classifier_macs / 1e6, 3)))
-            overall_params += classifier_params
-            overall_macs += classifier_macs
-
-            logger.double_dash_line(dashes=65)
-            print('{:<20} = {:>8.3f} M'.format('Overall parameters', overall_params / 1e6))
-            # Counting Addition and Multiplication as 1 operation
-            print('{:<20} = {:>8.3f} M'.format('Overall MACs', overall_macs / 1e6))
-            overall_params_py = sum([p.numel() for p in self.parameters()])
-            print('{:<20} = {:>8.3f} M'.format('Overall parameters (sanity check)', overall_params_py / 1e6))
-            logger.double_dash_line(dashes=65)
-
-        return out_dict, overall_params, overall_macs

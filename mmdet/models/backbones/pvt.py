@@ -20,6 +20,7 @@ from ..builder import BACKBONES
 from ..utils import PatchEmbed, nchw_to_nlc, nlc_to_nchw, pvt_convert
 
 
+
 class MixFFN(BaseModule):
     """An implementation of MixFFN of PVT.
 
