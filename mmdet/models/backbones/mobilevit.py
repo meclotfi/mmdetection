@@ -546,6 +546,7 @@ class MobileViT(BaseModule):
         out_channels = 16
         self.act_cfg=act_cfg
         self.out_indices=out_indices
+        self.init_cfg=init_cfg
 
 
         # Segmentation architectures like Deeplab and PSPNet modifies the strides of the classification backbones
