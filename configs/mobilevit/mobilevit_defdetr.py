@@ -1,4 +1,4 @@
-base=['../_base_/datasets/vww_detection.py',
+_base_=[
 '../_base_/default_runtime.py']
 model = dict(
     type='DeformableDETR',
@@ -138,12 +138,12 @@ model = dict(
     test_cfg=dict(max_per_img=50))
 
 # dataset settings
-dataset_type = 'VwwDataset'
-data_root = 'data/coco/'
+dataset_type = 'VwwDetection'
+data_root = './'
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
-    dict(type='LoadImageFromFile'),
+    dict(type='LoadImageFromFile',file_client_args=dict(backend='http')),
     dict(type='LoadAnnotations', with_bbox=True),
     dict(
         type='Expand',
@@ -166,7 +166,7 @@ train_pipeline = [
     dict(type='Collect', keys=['img', 'gt_bboxes', 'gt_labels'])
 ]
 test_pipeline = [
-    dict(type='LoadImageFromFile'),
+    dict(type='LoadImageFromFile',file_client_args=dict(backend='http')),
     dict(
         type='MultiScaleFlipAug',
         img_scale=(320, 320),
@@ -181,13 +181,13 @@ test_pipeline = [
         ])
 ]
 data = dict(
-    samples_per_gpu=64,
+    samples_per_gpu=8,
     workers_per_gpu=2,
     train=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/instances_train2017.json',
-        img_person_ids="annotations/person_train2017.npy",
-        img_prefix=data_root + 'train2017/',
+        img_person_ids="annotations/person.npy",
+        img_prefix="coco/annotations/instances_train2017.json",
         pipeline=train_pipeline),
     val=dict(
         type=dataset_type,
@@ -197,6 +197,16 @@ data = dict(
     test=dict(
         type=dataset_type,
         ann_file=data_root + 'annotations/instances_val2017.json',
-        img_prefix=data_root + 'val2017/',
+        img_prefix='coco/annotations/instances_val2017.json',
         pipeline=test_pipeline))
 evaluation = dict(interval=1, metric='bbox',metric_options={'topk': (1,)})
+
+optimizer = dict(
+    type='AdamW',
+    lr=2e-4,
+    weight_decay=0.0001,
+    )
+optimizer_config = dict(grad_clip=dict(max_norm=0.1, norm_type=2))
+# learning policy
+lr_config = dict(policy='step', step=[40])
+runner = dict(type='EpochBasedRunner', max_epochs=50)
