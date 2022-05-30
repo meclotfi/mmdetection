@@ -159,7 +159,7 @@ class VwwDetection(CustomDataset):
             else: 
                 to_del.append(i)
             total_ann_ids.extend(ann_ids)
-        if (not img_ids):
+        if (img_ids is None):
             self.img_ids = [x for x in self.img_ids if x not in to_del]
         assert len(set(total_ann_ids)) == len(
             total_ann_ids), f"Annotation ids in '{ann_file}' are not unique!"
