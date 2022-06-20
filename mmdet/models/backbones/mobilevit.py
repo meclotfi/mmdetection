@@ -583,25 +583,14 @@ class MobileViT(BaseModule):
             self.layer, out_channels = self._make_layer(input_channel=in_channels, cfg=Layers_config[config],dropout=dropout,attn_dropout=attn_dropout,ffn_dropout=ffn_droput)
             self.model_conf_dict[config] = {'in': in_channels, 'out': out_channels}
             self.layers.append(self.layer)
-        
-        in_channels = out_channels
-        exp_channels = min(2 * in_channels, 128)
-        self.conv_1x1_exp = ConvModule( in_channels=in_channels, out_channels=exp_channels,kernel_size=1, stride=1, act_cfg=act_cfg, norm_cfg=norm_cfg)
-        # check model
-        #self.check_model()
-
-        # weight initialization
-        #self.reset_parameters(opts=opts)
 
 
     def _freeze_stages(self):
-        for param in self.conv_1x1_exp.parameters():
-                param.requires_grad = False
         if self.frozen_stages >= 0:
             for param in self.conv1.parameters():
                 param.requires_grad = False
-        for i in range(1, self.frozen_stages + 1):
-            layer = getattr(self, f'layer{i}')
+        for i in range(1, self.frozen_stages):
+            layer = self.layers[i]
             layer.eval()
             for param in layer.parameters():
                 param.requires_grad = False
@@ -689,17 +678,16 @@ class MobileViT(BaseModule):
             if i in self.out_indices:
                 outs.append(x)
             
-        
-        #out=self.conv_1x1_exp(x)
         return outs
     def init_weights(self):
         super().init_weights()
         if not(self.pretrained is None):
             exp=torch.load(self.pretrained)
             st_dict=exp['state_dict']
+            model_dict=self.state_dict().keys()
             old_keys=copy.deepcopy(list(st_dict.keys()))
             for k in old_keys:
-                if k.startswith("backbone."):
+                if (k.startswith("backbone.")) and (k[9:] in model_dict):
                     st_dict[k[9:]] = st_dict.pop(k)
                 else:
                     st_dict.pop(k)
